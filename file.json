@@ -1,0 +1,10 @@
+{
+    "builds": [{
+        "build_file": "pom.xml",
+        "tasks": {
+            "run": "mvn spring-boot:run -DskipTests",
+            "test": "mvn test",
+            "build": "mvn clean package"
+        }
+    }]
+}

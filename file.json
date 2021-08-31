@@ -3,17 +3,19 @@
         {
             "build_file": "pom.xml",
             "tasks": {
-                "run": "mvn spring-boot:run -DskipTests",
-                "test": "mvn test",
-                "build": "mvn clean package"
+                "program": "mvn",
+                "run": "spring-boot:run -DskipTests",
+                "test": "test",
+                "build": "clean package"
             }
         },
         {
             "build_file": "Cargo.toml",
             "tasks": {
-                "run": "cargo run",
-                "test": "cargo test",
-                "build": "cargo build"
+                "program": "cargo",
+                "run": "run",
+                "test": "test",
+                "build": "build"
         }
     }]
 }

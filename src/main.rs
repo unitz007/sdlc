@@ -1,12 +1,11 @@
 use std::fs::*;
-use serde::{Deserialize, Serialize};
 use std::process::{Command, Stdio};
-use std::io::{Error, BufReader, ErrorKind, BufRead, Read};
+use std::io::{Error, BufReader, ErrorKind, BufRead};
 use std::env;
 use std::borrow::Borrow;
+use sdlc::model::{Build};
 
-
-fn main()-> Result<(), Error> {
+fn main() -> Result<(), Error> {
     let program = env::current_exe().unwrap();
 
     let program_name = program.file_name().unwrap();
@@ -20,7 +19,7 @@ fn main()-> Result<(), Error> {
 
     let program_path = program_full_path.split_at(program_full_path.len() - program_name.len()).0;
 
-    let contents = read_json(program_path.borrow());
+    let contents = sdlc::read_json(program_path.borrow());
 
     let args: Vec<String>= env::args().skip(1).collect();
 
@@ -43,7 +42,7 @@ fn main()-> Result<(), Error> {
             if file.eq(build_file) {
                 program = &command.tasks.program;
                 let arg = &args[0];
-                com = get_task(&arg, &command.tasks);
+                com = sdlc::get_task(&arg, &command.tasks);
             }
         }
     }
@@ -63,47 +62,4 @@ fn main()-> Result<(), Error> {
 
     Ok(())
 
-}
-
-fn read_json(path: &str) -> String {
-
-    let mut file = File::open(path.to_string() + "file.json").unwrap();
-
-    let mut json_content = String::new();
-
-    file.read_to_string(&mut json_content).expect("error reading file content");
-
-    return json_content;
-}
-
-
-#[derive(Debug, Deserialize, Serialize)]
-struct Tasks {
-    program: String,
-    run: String,
-    test: String,
-    build: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct Commands {
-    build_file: String,
-    tasks: Tasks,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct Build {
-    builds: Vec<Commands>,
-}
-
-fn get_task<'a>(arg: &'a String, task: &'a Tasks) -> &'a str {
-    if arg.eq("run") {
-        &task.run
-    } else if arg.eq("test") {
-        &task.test
-    } else if arg.eq("build") {
-        &task.build
-    } else {
-        panic!("Invalid sdlc command");
-    }
 }

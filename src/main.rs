@@ -1,39 +1,50 @@
-// use structopt::StructOpt;
 use std::fs::*;
-use std::path::Path;
 use serde::{Deserialize, Serialize};
 use std::process::{Command, Stdio};
-use std::io::{Error, BufReader, ErrorKind, BufRead};
-// use std::io::{_Write};
+use std::io::{Error, BufReader, ErrorKind, BufRead, Read};
+use std::env;
+use std::borrow::Borrow;
 
 
 fn main()-> Result<(), Error> {
-    let contents = read_json("file.json");
+    let program = env::current_exe().unwrap();
+
+    let program_name = program.file_name().unwrap();
+
+    let program_full_path = env::current_exe()
+        .unwrap()
+        .as_path()
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    let program_path = program_full_path.split_at(program_full_path.len() - program_name.len()).0;
+
+    let contents = read_json(program_path.borrow());
+
+    let args: Vec<String>= env::args().skip(1).collect();
+
+    if args.is_empty() {
+        panic!("Please provide an argument");
+    }
 
     let current_directory = std::env::current_dir().expect("error accessing directory");
-
-    // println!("{:?}", current_directory);
 
     let build: Build = serde_json::from_str(&contents).unwrap();
 
     let mut program = "";
     let mut com = "";
 
-
     for command in build.builds.iter() {
         let build_file = &command.build_file;
-
-
 
         for f in read_dir(&current_directory).unwrap().into_iter() {
             let file = f.unwrap().file_name().into_string().unwrap();
             if file.eq(build_file) {
-                // break;
-                // println!("{}", build_file);
                 program = &command.tasks.program;
-                com = &command.tasks.run;
+                let arg = &args[0];
+                com = get_task(&arg, &command.tasks);
             }
-
         }
     }
 
@@ -43,7 +54,6 @@ fn main()-> Result<(), Error> {
         .spawn()?
         .stdout
         .ok_or_else(|| Error::new(ErrorKind::Other,"Could not capture standard output."))?;
-
 
     let reader = BufReader::new(output);
 
@@ -55,26 +65,15 @@ fn main()-> Result<(), Error> {
 
 }
 
-// print!("{}", program);
-
-
 fn read_json(path: &str) -> String {
 
-    // println!("{:?}", Path::new(path));
-    let file = File::open(Path::new(path));
-    let contents;
+    let mut file = File::open(path.to_string() + "file.json").unwrap();
 
-    match file {
-        Ok(_) => {
-            contents = read_to_string(Path::new(path)).expect("error while reading file content");
-        }
-        Err(_) => {
-            File::create(path).expect("error creating file");
-            contents = read_to_string(Path::new(path)).expect("error reading file content")
-        }
-    }
+    let mut json_content = String::new();
 
-    return contents;
+    file.read_to_string(&mut json_content).expect("error reading file content");
+
+    return json_content;
 }
 
 
@@ -95,5 +94,18 @@ struct Commands {
 #[derive(Debug, Deserialize, Serialize)]
 struct Build {
     builds: Vec<Commands>,
+}
+
+fn get_task<'a>(arg: &'a String, task: &'a Tasks) -> &'a str {
+    if  arg.eq("run") {
+        &task.run
+    } else if arg.eq("test") {
+        &task.test
+    } else if arg.eq("build") {
+        &task.build
+    } else {
+        panic!("Invalid sdlc command");
+    }
+
 }
 

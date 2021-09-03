@@ -97,7 +97,7 @@ struct Build {
 }
 
 fn get_task<'a>(arg: &'a String, task: &'a Tasks) -> &'a str {
-    if  arg.eq("run") {
+    if arg.eq("run") {
         &task.run
     } else if arg.eq("test") {
         &task.test
@@ -106,6 +106,4 @@ fn get_task<'a>(arg: &'a String, task: &'a Tasks) -> &'a str {
     } else {
         panic!("Invalid sdlc command");
     }
-
 }
-

@@ -1,5 +1,0 @@
-package golang
-
-func main() {
-
-}

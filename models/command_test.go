@@ -6,9 +6,9 @@ var commandMock command
 
 func init() {
 
-	commandMock = command{
-		buildFile: "go.mod",
-		task: task{
+	commandMock = NewCommand{
+		"go.mod",
+		task{
 			program: "run",
 			run:     "run",
 			build:   "build",

@@ -1,8 +1,6 @@
 package models
 
-import (
-	"testing"
-)
+import "testing"
 
 var taskMock = NewTask(
 	"go",

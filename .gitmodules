@@ -1,3 +1,6 @@
 [submodule "sdlc-rust"]
 	path = sdlc-rust
 	url = git@github.com:unitz007/sdlc-rust.git
+[submodule "sdlc-go"]
+	path = sdlc-go
+	url = git@github.com:unitz007/sdlc-go.git

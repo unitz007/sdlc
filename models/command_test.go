@@ -2,20 +2,14 @@ package models
 
 import "testing"
 
-var commandMock command
-
-func init() {
-
-	commandMock = NewCommand{
-		"go.mod",
-		task{
-			program: "run",
-			run:     "run",
-			build:   "build",
-			test:    "test",
-		},
-	}
-}
+var commandMock = NewCommand(
+	"go.mod",
+	task{
+		program: "run",
+		run:     "run",
+		build:   "build",
+		test:    "test",
+	})
 
 func Test_commandStructShouldImplementCommandSpec(t *testing.T) {
 

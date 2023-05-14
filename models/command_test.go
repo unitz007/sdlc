@@ -1,12 +1,17 @@
 package models
 
-import "testing"
+var command command
 
-func Test_valueAssertions(t *testing.T)  {
+func init() {
 
-	command := Command {
+	command = command {
 		buildFile: "go.mod",
-		task: TaskSpec
+		task: task {
+			program: "run",
+			run: "run",
+			build: "build",
+			test: "test",
+		},
 	}
 
 }

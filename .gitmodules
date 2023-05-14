@@ -4,3 +4,4 @@
 [submodule "sdlc-go"]
 	path = sdlc-go
 	url = git@github.com:unitz007/sdlc-go.git
+	branch=main

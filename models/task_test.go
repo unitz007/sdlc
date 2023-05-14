@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-var taskMock = newTask(
+var taskMock = NewTask(
 	"go",
 	"run .",
 	"test .",
@@ -66,5 +66,4 @@ func Test_taskShouldBeOfTypeTaskSpec(t *testing.T) {
 	if !test {
 		t.Error("task is not of type TaskSpec")
 	}
-
 }

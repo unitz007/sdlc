@@ -14,7 +14,7 @@ type TaskSpec interface {
 	Build() string
 }
 
-func newTask(program, run, test, build string) TaskSpec {
+func NewTask(program, run, test, build string) TaskSpec {
 	return task{
 		program: program,
 		test:    test,

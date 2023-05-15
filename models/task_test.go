@@ -19,25 +19,25 @@ func Test_taskValueAssertions(t *testing.T) {
 	}{
 		{
 			"programTest",
-			taskMock.Program(),
+			taskMock.Program,
 			"go",
 			"go should be equal to go",
 		},
 		{
 			"runTest",
-			taskMock.Run(),
+			taskMock.Run,
 			"run .",
 			"\"run .\" should be equal to \"run .\"",
 		},
 		{
 			"testTest",
-			taskMock.Test(),
+			taskMock.Test,
 			"test .",
 			"\"test .\" should be equal to \"test .\"",
 		},
 		{
 			"buildTest",
-			taskMock.Build(),
+			taskMock.Build,
 			"build",
 			"build should be equal to build",
 		},
@@ -50,18 +50,18 @@ func Test_taskValueAssertions(t *testing.T) {
 	}
 }
 
-func Test_taskShouldBeOfTypeTaskSpec(t *testing.T) {
-
-	test := func() bool {
-		switch taskMock.(type) {
-		case TaskSpec:
-			return true
-		default:
-			return false
-		}
-	}()
-
-	if !test {
-		t.Error("task is not of type TaskSpec")
-	}
-}
+//func Test_taskShouldBeOfTypeTaskSpec(t *testing.T) {
+//
+//	test := func() bool {
+//		switch taskMock.(type) {
+//		case TaskSpec:
+//			return true
+//		default:
+//			return false
+//		}
+//	}()
+//
+//	if !test {
+//		t.Error("task is not of type TaskSpec")
+//	}
+//}

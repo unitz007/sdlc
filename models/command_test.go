@@ -7,21 +7,21 @@ var commandMock = NewCommand(
 	taskMock,
 )
 
-func Test_commandStructShouldImplementCommandSpec(t *testing.T) {
-
-	test := func() bool {
-		switch commandMock.(type) {
-		case CommandSpec:
-			return true
-		default:
-			return false
-		}
-	}()
-
-	if !test {
-		t.Error("command struct does not implement CommandSpec")
-	}
-}
+//func Test_commandStructShouldImplementCommandSpec(t *testing.T) {
+//
+//	test := func() bool {
+//		switch commandMock.(type) {
+//		case CommandSpec:
+//			return true
+//		default:
+//			return false
+//		}
+//	}()
+//
+//	if !test {
+//		t.Error("command struct does not implement CommandSpec")
+//	}
+//}
 
 func Test_fieldAssertions(t *testing.T) {
 	commandTestTable := []struct {
@@ -32,13 +32,13 @@ func Test_fieldAssertions(t *testing.T) {
 	}{
 		{
 			"Build file field test",
-			commandMock.BuildFile(),
+			commandMock.BuildFile,
 			"go.mod",
 			"buildFile field should be go.mod",
 		},
 		{
 			"Task field test",
-			commandMock.Task(),
+			commandMock.Task,
 			taskMock,
 			"buildFile field should be go.mod",
 		},

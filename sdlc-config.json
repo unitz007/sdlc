@@ -1,0 +1,6 @@
+{
+  "program": "go",
+  "run": "run .",
+  "test": "test .",
+  "build": "build ."
+}

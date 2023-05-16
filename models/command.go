@@ -1,7 +1,7 @@
 package models
 
 type Command struct {
-	BuildFile string `json:"buildFile"`
+	BuildFile string `json:"build_file"`
 	Task      Task   `json:"task"`
 }
 

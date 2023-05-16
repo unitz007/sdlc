@@ -1,6 +1,13 @@
 {
-  "program": "go",
-  "run": "run .",
-  "test": "test .",
-  "build": "build ."
+  "builds": [
+    {
+      "build_file": "go.mod",
+      "task": {
+        "program": "go",
+        "run": "run .",
+        "build": "build .",
+        "test": "test ."
+      }
+    }
+  ]
 }

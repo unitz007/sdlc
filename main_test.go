@@ -35,12 +35,20 @@ func Test_loadConfig(t *testing.T) {
 	}
 
 	for _, testCase := range testCases {
-		task, err := loadConfig(testCase.testValue.data)
+		_, err := loadConfig(testCase.testValue.data)
 
 		if err == nil {
 			t.Errorf("%s: config content should be in json format", testCase.name)
 		}
-
-		fmt.Println(task)
 	}
+}
+
+func Test_decodeConfig(t *testing.T) {
+	task, err := decodeConfig()
+
+	if err != nil {
+		t.Errorf("error: invalid config structure")
+	}
+
+	fmt.Println(task)
 }

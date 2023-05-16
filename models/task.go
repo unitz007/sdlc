@@ -15,3 +15,16 @@ func NewTask(program, run, test, build string) Task {
 		Run:     run,
 	}
 }
+
+func (c Task) Command(field string) string {
+	switch field {
+	case "run":
+		return c.Run
+	case "test":
+		return c.Test
+	case "build":
+		return c.Build
+	default:
+		panic("unknown command")
+	}
+}

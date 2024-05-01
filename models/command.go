@@ -1,13 +1,25 @@
 package models
 
-type Command struct {
-	BuildFile string `json:"build_file"`
-	Task      Task   `json:"task"`
+type Commands interface {
+	Task() *Task
 }
 
-func NewCommand(buildFile string, task Task) Command {
-	return Command{
-		BuildFile: buildFile,
-		Task:      task,
-	}
+type Command struct {
+	Bf  string `json:"build_file"`
+	Tsk *Task  `json:"task"`
 }
+
+func (c Command) BuildFile() string {
+	return c.Bf
+}
+
+func (c Command) Task() *Task {
+	return c.Tsk
+}
+
+//func NewCommand(buildFile string, task *Task) Command {
+//	return command{
+//		Bf:  buildFile,
+//		Tsk: task,
+//	}
+//}

@@ -8,6 +8,15 @@
         "build": "build .",
         "test": "test ."
       }
+    },
+    {
+      "build_file": "pom.xml",
+      "task": {
+        "program": "mvn",
+        "run": "spring-boot:run",
+        "build": "build .",
+        "test": "test ."
+      }
     }
   ]
 }

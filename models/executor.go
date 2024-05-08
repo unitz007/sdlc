@@ -3,6 +3,7 @@ package models
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 )
@@ -20,9 +21,13 @@ func NewExecutor(command string) *Executor {
 }
 
 func (e *Executor) Execute() error {
-	fmt.Println(e.cmd.String())
+	var stdOutput io.ReadCloser
+	var stdErr io.ReadCloser
 
-	pipedOutput, err := e.cmd.StdoutPipe()
+	stdOutput, err := e.cmd.StdoutPipe()
+	stdErr, err = e.cmd.StderrPipe()
+
+	cmdOutput := io.MultiReader(stdOutput, stdErr)
 
 	if err != nil {
 		return err
@@ -32,11 +37,12 @@ func (e *Executor) Execute() error {
 		return err
 	}
 
-	buf := bufio.NewReader(pipedOutput)
-	line, err := buf.ReadString('\n')
+	bufOutput := bufio.NewReader(cmdOutput)
+	_ = bufio.NewReader(stdErr)
+	line, err := bufOutput.ReadString('\n')
 	for err == nil {
 		fmt.Print(line)
-		line, err = buf.ReadString('\n')
+		line, err = bufOutput.ReadString('\n')
 	}
 
 	return nil

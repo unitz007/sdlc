@@ -1,0 +1,17 @@
+{
+    "pom.xml": {
+        "run": "mvn spring-boot:run",
+        "test": "mvn test",
+        "build": "mvn build"
+    },
+    "go.mod": {
+        "run": "go run main.go",
+        "test": "go test .",
+        "build": "go build -v"
+    },
+    "Package.swift": {
+        "run": "swift run",
+        "test": "swift test",
+        "build": "swift build"
+    }
+}

@@ -16,10 +16,3 @@ func (c Command) BuildFile() string {
 func (c Command) Task() *Task {
 	return c.Tsk
 }
-
-//func NewCommand(buildFile string, task *Task) Command {
-//	return command{
-//		Bf:  buildFile,
-//		Tsk: task,
-//	}
-//}

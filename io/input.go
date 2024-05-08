@@ -2,7 +2,6 @@ package io
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path"
 	"sdlc/models"
@@ -41,8 +40,7 @@ func getConfigFile() []byte {
 	if err != nil {
 		_, err := os.Create(configFile)
 		if err != nil {
-			fmt.Println(configFileError, err.Error())
-			os.Exit(1)
+			FatalPrint(configFileError + err.Error())
 		}
 	}
 

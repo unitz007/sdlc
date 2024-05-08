@@ -1,7 +1,6 @@
 package main
 
 import (
-	"io/ioutil"
 	"os"
 	"sdlc/io"
 	"sdlc/models"
@@ -21,7 +20,7 @@ func main() {
 	rootCmd := io.NewCommand("sdlc", "", func(cmd *cobra.Command, args []string) {
 		if len(args) == 0 {
 			_ = cmd.Help()
-			return
+			os.Exit(1)
 		}
 	}).Cmd
 
@@ -71,12 +70,17 @@ func main() {
 
 	for buildFile, task := range buildData {
 
-		filesInWorkingDirectory, _ := ioutil.ReadDir(workingDirectory)
+		filesInWorkingDirectory, _ := os.ReadDir(workingDirectory)
 
 		for _, file := range filesInWorkingDirectory {
 			if file.Name() == buildFile {
 				io.Print("Build file found: " + file.Name())
-				command.WriteString(task.Command(argCommand))
+				com, err := task.Command(argCommand)
+				if err != nil {
+					io.Print(err.Error())
+					return
+				}
+				command.WriteString(com)
 			}
 		}
 	}
@@ -86,6 +90,7 @@ func main() {
 		return
 	}
 
+	// Add extra arguments to the command
 	if extraArgs != "" {
 		command.WriteString(" " + extraArgs)
 	}
@@ -95,8 +100,6 @@ func main() {
 		io.Print("Error executing command: " + err.Error())
 		return
 	}
-
-	io.Print("Completed")
 }
 
 type ConfigFile struct {

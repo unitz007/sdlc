@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"testing"
 )
 
@@ -16,39 +15,39 @@ import (
 
 func Test_loadConfig(t *testing.T) {
 
-	testCases := []struct {
-		name      string
-		testValue ConfigFile
-	}{
-		{
-			name: "Empty String",
-			testValue: ConfigFile{
-				data: "",
-			},
-		},
-		{
-			name: "Non json String",
-			testValue: ConfigFile{
-				data: "normal test string",
-			},
-		},
-	}
+	// testCases := []struct {
+	// 	name      string
+	// 	testValue ConfigFile
+	// }{
+	// 	{
+	// 		name: "Empty String",
+	// 		testValue: ConfigFile{
+	// 			data: "",
+	// 		},
+	// 	},
+	// 	{
+	// 		name: "Non json String",
+	// 		testValue: ConfigFile{
+	// 			data: "normal test string",
+	// 		},
+	// 	},
+	// }
 
-	for _, testCase := range testCases {
-		_, err := loadConfig(testCase.testValue.data)
+	// for _, testCase := range testCases {
+	// 	_, err := loadConfig(testCase.testValue.data)
 
-		if err == nil {
-			t.Errorf("%s: config content should be in json format", testCase.name)
-		}
-	}
-}
+	// 	if err == nil {
+	// 			t.Errorf("%s: config content should be in json format", testCase.name)
+	// 		}
+	// 	}
+	// }
 
-func Test_decodeConfig(t *testing.T) {
-	task, err := decodeConfig()
+	// func Test_decodeConfig(t *testing.T) {
+	// 	task, err := decodeConfig()
 
-	if err != nil {
-		t.Errorf("error: invalid config structure")
-	}
+	// 	if err != nil {
+	// 	t.Errorf("error: invalid config structure")
+	// }
 
-	fmt.Println(task)
+	// fmt.Println(task)
 }

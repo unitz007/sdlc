@@ -1,5 +1,7 @@
 package models
 
+import "errors"
+
 type Task struct {
 	Program string `json:"program"`
 	Run     string `json:"run"`
@@ -7,18 +9,15 @@ type Task struct {
 	Build   string `json:"build"`
 }
 
-func (c Task) Command(field string) string {
+func (c Task) Command(field string) (string, error) {
 	switch field {
 	case "run":
-		return c.Run
+		return c.Run, nil
 	case "test":
-		return c.Test
+		return c.Test, nil
 	case "build":
-		return c.Build
+		return c.Build, nil
 	default:
-		panic("unknown command")
+		return "", errors.New("invalid command")
 	}
-}
-
-type ConfigFile struct {
 }

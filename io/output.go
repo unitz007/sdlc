@@ -11,5 +11,5 @@ func FatalPrint(v string) {
 }
 
 func Print(v string) {
-	fmt.Println("SDLC:", v)
+	fmt.Println("[SDLC]", v)
 }

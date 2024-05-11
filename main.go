@@ -70,14 +70,22 @@ func main() {
 	}
 
 	buildData := io.GetBuilds()
-
 	var command strings.Builder
 
-	io.Print(workingDirectory)
+	workingDirectory = func() string {
+		if strings.HasPrefix(workingDirectory, "~/") {
+			homeDir, _ := os.UserHomeDir()
+			return strings.ReplaceAll(workingDirectory, "~", homeDir)
+		}
+
+		return workingDirectory
+	}()
 
 	if workingDirectory == "" {
 		workingDirectory, _ = os.Getwd()
 	}
+
+	io.Print("Working Directory: " + workingDirectory)
 
 	// change directory
 	_ = os.Chdir(workingDirectory)

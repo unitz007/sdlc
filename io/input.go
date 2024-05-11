@@ -26,7 +26,7 @@ func NewCommand(command, description string, exec func(cmd *cobra.Command, args 
 		Run:   exec,
 	}
 
-	cmd.Flags().StringP("dir", "d", "", "pass in project directory")
+	cmd.Flags().StringP("dir", "d", "", "Absolute path to project directory")
 	cmd.Flags().StringP("extraArgs", "e", "", "Extra arguments to pass to the build tool")
 
 	return &CLI{

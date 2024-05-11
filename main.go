@@ -12,8 +12,9 @@ import (
 func main() {
 
 	var (
-		argCommand string
-		extraArgs  string
+		argCommand       string
+		extraArgs        string
+		workingDirectory string
 	)
 
 	// CLI arguments
@@ -22,6 +23,8 @@ func main() {
 			_ = cmd.Help()
 			os.Exit(1)
 		}
+
+		workingDirectory = cmd.Flag("dir").Value.String()
 	}).Cmd
 
 	subCommands := []struct {
@@ -35,6 +38,7 @@ func main() {
 			func(cmd *cobra.Command, args []string) {
 				argCommand = "run"
 				extraArgs = cmd.Flag("extraArgs").Value.String()
+				workingDirectory = cmd.Flag("dir").Value.String()
 			},
 		}, {
 			"test",
@@ -42,6 +46,7 @@ func main() {
 			func(cmd *cobra.Command, args []string) {
 				argCommand = "test"
 				extraArgs = cmd.Flag("extraArgs").Value.String()
+				workingDirectory = cmd.Flag("dir").Value.String()
 			},
 		}, {
 			"build",
@@ -49,6 +54,7 @@ func main() {
 			func(cmd *cobra.Command, args []string) {
 				argCommand = "build"
 				extraArgs = cmd.Flag("extraArgs").Value.String()
+				workingDirectory = cmd.Flag("dir").Value.String()
 			},
 		},
 	}
@@ -66,7 +72,15 @@ func main() {
 	buildData := io.GetBuilds()
 
 	var command strings.Builder
-	workingDirectory, _ := os.Getwd()
+
+	io.Print(workingDirectory)
+
+	if workingDirectory == "" {
+		workingDirectory, _ = os.Getwd()
+	}
+
+	// change directory
+	_ = os.Chdir(workingDirectory)
 
 	for buildFile, task := range buildData {
 
@@ -100,8 +114,4 @@ func main() {
 		io.Print("Error executing command: " + err.Error())
 		return
 	}
-}
-
-type ConfigFile struct {
-	data string
 }

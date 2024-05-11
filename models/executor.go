@@ -21,11 +21,9 @@ func NewExecutor(command string) *Executor {
 }
 
 func (e *Executor) Execute() error {
-	var stdOutput io.ReadCloser
-	var stdErr io.ReadCloser
 
 	stdOutput, err := e.cmd.StdoutPipe()
-	stdErr, err = e.cmd.StderrPipe()
+	stdErr, err := e.cmd.StderrPipe()
 
 	cmdOutput := io.MultiReader(stdOutput, stdErr)
 

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path"
-	"sdlc/models"
+	"sdlc/lib"
 
 	"github.com/spf13/cobra"
 )
@@ -48,8 +48,8 @@ func getConfigFile() []byte {
 	return fileContent
 }
 
-func GetBuilds() map[string]models.Task {
-	var j map[string]models.Task
+func GetBuilds() map[string]lib.Task {
+	var j map[string]lib.Task
 
 	err := json.Unmarshal(getConfigFile(), &j)
 	if err != nil {

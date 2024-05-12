@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 	"sdlc/io"
-	"sdlc/models"
+	"sdlc/lib"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -117,7 +117,7 @@ func main() {
 		command.WriteString(" " + extraArgs)
 	}
 
-	execute := models.NewExecutor(command.String())
+	execute := lib.NewExecutor(command.String())
 	if err := execute.Execute(); err != nil {
 		io.Print("Error executing command: " + err.Error())
 		return

@@ -7,7 +7,7 @@ Build from source using [git](https://git-scm.com) and [go](https://go.dev)
 ```bash
 git clone https://github.com/unitz007/sdlc
 cd sdlc
-[go](https://www.apache.org/licenses/LICENSE-2.0) build -v
+go build -v
 ````
 
 ## Usage

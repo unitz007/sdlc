@@ -12,7 +12,7 @@ go build -v
 
 ## Usage
 ```bash
-sdlc --help
+./sdlc --help
 ```
 
 ## Contributing

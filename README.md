@@ -14,6 +14,21 @@ go build -v
 ```bash
 ./sdlc --help
 ```
+## Configure builds
+```json
+{
+  "pom.xml": {
+    "run": "mvn spring-boot:run",
+    "test": "mvn test",
+    "build": "mvn build"
+  },
+  "go.mod": {
+    "run": "go run main.go",
+    "test": "go test .",
+    "build": "go build -v"
+  }
+}
+```
 
 ## Contributing
 Pull requests are welcome. For major changes, please open an issue first

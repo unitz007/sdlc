@@ -20,8 +20,8 @@ func main() {
 	// CLI arguments
 	rootCmd := io.NewCommand("sdlc", "", func(cmd *cobra.Command, args []string) {
 		if len(args) == 0 {
-      _ = cmd.Help()
-      os.Exit(1)
+			_ = cmd.Help()
+			os.Exit(1)
 		}
 
 		workingDirectory = cmd.Flag("dir").Value.String()

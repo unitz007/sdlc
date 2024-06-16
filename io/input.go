@@ -47,7 +47,6 @@ func getConfigFile() []byte {
 
 	return fileContent
 }
-
 func GetBuilds() map[string]lib.Task {
 	var j map[string]lib.Task
 

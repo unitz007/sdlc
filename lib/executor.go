@@ -38,7 +38,10 @@ func (e *Executor) Execute() error {
 	bufOutput := bufio.NewReader(cmdOutput)
 	line, err := bufOutput.ReadString('\n')
 	for err == nil {
-		fmt.Print(line)
+		prog := e.cmd.Path
+		s := strings.Split(prog, "/")
+		prog = s[len(s)-1]
+		fmt.Printf("[%s] %s", prog, line)
 		line, err = bufOutput.ReadString('\n')
 	}
 

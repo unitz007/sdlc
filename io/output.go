@@ -6,7 +6,7 @@ import (
 )
 
 func FatalPrint(v string) {
-	fmt.Println("Error:", v)
+	fmt.Println("[SDLC]:", v)
 	os.Exit(1)
 }
 

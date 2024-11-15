@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"path/filepath"
 	"sdlc/io"
 	"sdlc/lib"
 	"strings"
@@ -13,21 +12,17 @@ import (
 func main() {
 
 	var (
-		argCommand       string
-		extraArgs        string
-		workingDirectory string
-		configFile       string
+		argCommand              string
+		extraArgs               string
+		workingDirectoryCommand string
+		configFile              string
 	)
 
 	// CLI arguments
-	rootCmd := io.NewCommand("sdlc", "", func(cmd *cobra.Command, args []string) {
+	rootCmd := io.NewCommand("sdlc", "SDLC helps manage the full lifecycle of your software project", func(cmd *cobra.Command, args []string) {
 		if len(args) == 0 {
-			_ = cmd.Help()
-			os.Exit(1)
+			return
 		}
-
-		workingDirectory = cmd.Flag("dir").Value.String()
-
 	}).Cmd
 
 	var subcommand = func(com string, desc string) command {
@@ -37,7 +32,7 @@ func main() {
 			action: func(cmd *cobra.Command, args []string) {
 				argCommand = com
 				extraArgs = cmd.Flag("extraArgs").Value.String()
-				workingDirectory = cmd.Flag("dir").Value.String()
+				workingDirectoryCommand = cmd.Flag("dir").Value.String()
 				configFile = cmd.Flag("config").Value.String()
 			},
 		}
@@ -61,30 +56,33 @@ func main() {
 
 	buildData := io.GetBuilds(configFile)
 	var com strings.Builder
+	workingDirectory := func() string {
+		var wd string
+		if workingDirectoryCommand == "" {
+			wd, _ = os.Getwd()
+		} else {
+			wd = workingDirectoryCommand
+		}
 
-	workingDirectory = func(wd string) string {
-		if strings.HasPrefix(workingDirectory, "~/") {
+		if strings.HasPrefix(wd, "~/") {
 			homeDir, _ := os.UserHomeDir()
-			return strings.ReplaceAll(workingDirectory, "~", homeDir)
+			strings.ReplaceAll(wd, "~", homeDir)
 		}
 
-		return workingDirectory
-	}(workingDirectory)
+		return wd
+	}()
 
-	if workingDirectory == "" {
-		workingDirectory, err := os.Getwd()
-		if err != nil {
-			io.FatalPrint("Unable to get working directory: " + err.Error())
-		}
-		_ = os.Chdir(workingDirectory)
-	} else {
-		_ = os.Chdir(workingDirectory)
+	err := os.Chdir(workingDirectory)
+	if err != nil {
+		io.FatalPrint(err.Error())
 	}
 
+	files, err := os.ReadDir(workingDirectory)
+
 	for buildFile, task := range buildData {
-		filepath.Walk(workingDirectory, func(path string, info os.FileInfo, err error) error {
-			if info.Name() == buildFile {
-				io.Print("Build file found: " + info.Name())
+		for _, file := range files {
+			if file.Name() == buildFile {
+				io.Print("Build file found: " + file.Name())
 				output, err := task.Command(argCommand)
 				if err != nil {
 					io.Print(err.Error())
@@ -93,8 +91,7 @@ func main() {
 				com.WriteString(output)
 			}
 
-			return nil
-		})
+		}
 	}
 
 	if com.String() == "" {

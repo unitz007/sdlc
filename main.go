@@ -15,7 +15,6 @@ func main() {
 		argCommand              string
 		extraArgs               string
 		workingDirectoryCommand string
-		configFile              string
 	)
 
 	// CLI arguments
@@ -33,7 +32,6 @@ func main() {
 				argCommand = com
 				extraArgs = cmd.Flag("extraArgs").Value.String()
 				workingDirectoryCommand = cmd.Flag("dir").Value.String()
-				configFile = cmd.Flag("config").Value.String()
 			},
 		}
 	}
@@ -54,7 +52,9 @@ func main() {
 		return
 	}
 
-	buildData := io.GetBuilds(configFile)
+	configFilePath := os.Getenv("SDLC_CONFIG_LOCATION")
+
+	buildData := io.GetBuilds(configFilePath)
 	var com strings.Builder
 	workingDirectory := func() string {
 		var wd string
@@ -104,8 +104,8 @@ func main() {
 		com.WriteString(" " + extraArgs)
 	}
 
-	if configFile != "" {
-		com.WriteString(" " + configFile)
+	if configFilePath != "" {
+		com.WriteString(" " + configFilePath)
 	}
 
 	execute := lib.NewExecutor(com.String())

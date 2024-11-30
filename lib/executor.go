@@ -4,8 +4,11 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"syscall"
 )
 
 type Executor struct {
@@ -35,14 +38,22 @@ func (e *Executor) Execute() error {
 		return err
 	}
 
+	sig := make(chan os.Signal, 1)
+	done := make(chan bool, 1)
+
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		_ = <-sig
+		fmt.Printf("\nProject exited with ")
+		done <- true
+	}()
+
 	bufOutput := bufio.NewReader(cmdOutput)
-	line, err := bufOutput.ReadString('\n')
+	line, err := bufOutput.ReadByte()
 	for err == nil {
-		prog := e.cmd.Path
-		s := strings.Split(prog, "/")
-		prog = s[len(s)-1]
-		fmt.Printf("[%s] %s", prog, line)
-		line, err = bufOutput.ReadString('\n')
+		fmt.Printf("%s", string(line))
+		line, err = bufOutput.ReadByte()
 	}
 
 	return nil

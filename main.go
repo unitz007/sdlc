@@ -115,6 +115,7 @@ func main() {
 	}
 }
 
+// command holds the metadata for an SDLC CLI subcommand.
 type command struct {
 	command     string
 	description string

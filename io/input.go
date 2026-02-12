@@ -1,3 +1,5 @@
+// Package io provides CLI construction, configuration loading, and formatted
+// console output for the SDLC tool.
 package io
 
 import (
@@ -14,10 +16,15 @@ const (
 	configFileError = "could not create config file:"
 )
 
+// CLI wraps a cobra.Command and provides a convenient constructor for creating
+// SDLC subcommands with common flags pre-registered.
 type CLI struct {
 	Cmd *cobra.Command
 }
 
+// NewCommand creates a new CLI instance with the given command name, description,
+// and run function. The returned command has --dir, --extraArgs, and --config
+// flags pre-registered.
 func NewCommand(command, description string, exec func(cmd *cobra.Command, args []string)) *CLI {
 	cmd := &cobra.Command{
 		Use:   command,
@@ -35,6 +42,9 @@ func NewCommand(command, description string, exec func(cmd *cobra.Command, args 
 	}
 }
 
+// getConfigFile reads the .sdlc.json configuration file from the given directory
+// path. If conf is empty, it defaults to the user's home directory. If the file
+// does not exist, an empty file is created.
 func getConfigFile(conf string) []byte {
 	var configFile string
 	if conf != "" {
@@ -54,6 +64,10 @@ func getConfigFile(conf string) []byte {
 
 	return fileContent
 }
+
+// GetBuilds reads and unmarshals the SDLC configuration file at the given path
+// into a map of build-file names to their corresponding Task definitions.
+// It calls FatalPrint and exits if the JSON is invalid.
 func GetBuilds(path string) map[string]lib.Task {
 	var j map[string]lib.Task
 

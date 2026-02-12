@@ -11,10 +11,15 @@ import (
 	"syscall"
 )
 
+// Executor wraps an os/exec.Cmd to run a shell command, stream its combined
+// stdout/stderr output, and handle OS interrupt signals gracefully.
 type Executor struct {
 	cmd *exec.Cmd
 }
 
+// NewExecutor creates a new Executor for the given command string. The command
+// is split on spaces — the first token is used as the program name and the
+// remaining tokens as arguments.
 func NewExecutor(command string) *Executor {
 	program := strings.Split(command, " ")[0]
 	cmd := exec.Command(program, strings.Split(command, " ")[1:]...)
@@ -23,6 +28,9 @@ func NewExecutor(command string) *Executor {
 
 }
 
+// Execute starts the underlying command, streams its combined stdout and stderr
+// output to the console in real-time, and listens for SIGINT/SIGTERM signals to
+// handle graceful shutdown.
 func (e *Executor) Execute() error {
 
 	stdOutput, err := e.cmd.StdoutPipe()

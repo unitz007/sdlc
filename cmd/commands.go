@@ -265,14 +265,14 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, action stri
 					continue
 				}
 
-				changed, err := hasChanges(p.AbsPath, s.lastMod)
+				changed, changedFile, err := hasChanges(p.AbsPath, s.lastMod)
 				if err != nil {
 					fmt.Printf("[SDLC] Watch error in %s: %v\n", p.Path, err)
 					continue
 				}
 
 				if changed {
-					fmt.Printf("\n[SDLC] File change detected in %s. Restarting module...\n", p.Path)
+					fmt.Printf("\n[SDLC] File change detected: %s in %s. Restarting module...\n", filepath.Base(changedFile), p.Path)
 					startProject(p, i)
 				}
 			}
@@ -320,7 +320,7 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 	}
 
 	color := getModuleColor(index)
-	prefix := fmt.Sprintf("[DEBUG-%s%s%s] ", color, p.Path, colorReset)
+	prefix := fmt.Sprintf("[%s%s%s] ", color, p.Path, colorReset)
 	var out, errOut io.Writer
 
 	if multi {
@@ -370,8 +370,9 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 }
 
 // hasChanges checks if any file in root has been modified since sinceTime
-func hasChanges(root string, sinceTime time.Time) (bool, error) {
+func hasChanges(root string, sinceTime time.Time) (bool, string, error) {
 	var changed bool
+	var changedFile string
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -399,15 +400,16 @@ func hasChanges(root string, sinceTime time.Time) (bool, error) {
 
 		if info.ModTime().After(sinceTime) {
 			changed = true
+			changedFile = path
 			return io.EOF // Stop walking
 		}
 		return nil
 	})
 
 	if err == io.EOF {
-		return true, nil
+		return true, changedFile, nil
 	}
-	return changed, err
+	return changed, "", err
 }
 
 // PrefixWriter wraps an io.Writer and prefixes each line with a given prefix

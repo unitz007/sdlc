@@ -187,71 +187,95 @@ func runTask(ctx context.Context, wd, action string) error {
 }
 
 func watchAndRunLoop(ctx context.Context, projects []engine.Project, action string, rootEnvConfig *config.EnvSettings) error {
-	fmt.Println("[SDLC] Starting watchAndRunLoop")
+	fmt.Println("[SDLC] Starting smart watchAndRunLoop")
 	defer fmt.Println("[SDLC] Exiting watchAndRunLoop")
-	lastModTime := time.Now()
+
+	type projectState struct {
+		cancel  context.CancelFunc
+		wg      *sync.WaitGroup
+		lastMod time.Time
+	}
+
+	states := make(map[string]*projectState)
+	var mu sync.Mutex
+
+	// Helper to start (or restart) a project
+	startProject := func(p engine.Project, idx int) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		state, exists := states[p.Path]
+		if exists {
+			// Stop existing
+			state.cancel()
+			state.wg.Wait()
+			// Add a small delay to ensure file handles are released
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		// New context
+		runCtx, cancel := context.WithCancel(ctx)
+		wg := &sync.WaitGroup{}
+		wg.Add(1)
+
+		newState := &projectState{
+			cancel:  cancel,
+			wg:      wg,
+			lastMod: time.Now(),
+		}
+		states[p.Path] = newState
+
+		go func() {
+			defer wg.Done()
+			env, args := prepareProjectEnv(p, rootEnvConfig)
+			runProject(runCtx, p, idx, action, env, args, len(projects) > 1)
+		}()
+	}
+
+	// Initial start
+	for i, p := range projects {
+		startProject(p, i)
+	}
+
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
-		// Create a cancellable context for this run iteration
-		runCtx, cancel := context.WithCancel(ctx)
+		select {
+		case <-ctx.Done():
+			fmt.Println("[SDLC] Context cancelled, exiting watch loop")
+			mu.Lock()
+			for _, s := range states {
+				s.cancel()
+			}
+			for _, s := range states {
+				s.wg.Wait()
+			}
+			mu.Unlock()
+			return nil
 
-		// Start all projects
-		var wg sync.WaitGroup
-		for i, project := range projects {
-			wg.Add(1)
-			go func(p engine.Project, index int) {
-				defer wg.Done()
-				env, args := prepareProjectEnv(p, rootEnvConfig)
-				runProject(runCtx, p, index, action, env, args, len(projects) > 1)
-			}(project, i)
-		}
+		case <-ticker.C:
+			// Check for changes
+			for i, p := range projects {
+				mu.Lock()
+				s, ok := states[p.Path]
+				mu.Unlock()
 
-		// Wait for changes
-		changed := false
-		var changedPath string
+				if !ok {
+					continue
+				}
 
-		// Loop to check for changes
-	changeLoop:
-		for {
-			select {
-			case <-ctx.Done():
-				fmt.Println("[SDLC] Context cancelled, exiting watch loop")
-				cancel()
-				wg.Wait()
-				return nil
-			case <-ticker.C:
-				// Check all projects for changes
-				for _, p := range projects {
-					c, err := hasChanges(p.AbsPath, lastModTime)
-					if err != nil {
-						fmt.Printf("[SDLC] Watch error in %s: %v\n", p.Path, err)
-						continue
-					}
-					if c {
-						changed = true
-						changedPath = p.Path
-						break changeLoop
-					}
+				changed, changedFile, err := hasChanges(p.AbsPath, s.lastMod)
+				if err != nil {
+					fmt.Printf("[SDLC] Watch error in %s: %v\n", p.Path, err)
+					continue
+				}
+
+				if changed {
+					fmt.Printf("\n[SDLC] File change detected: %s in %s. Restarting module...\n", filepath.Base(changedFile), p.Path)
+					startProject(p, i)
 				}
 			}
-		}
-
-		if changed {
-			fmt.Printf("\n[SDLC] File change detected in %s. Restarting all modules...\n", changedPath)
-			lastModTime = time.Now()
-
-			// Cancel current processes
-			cancel()
-
-			// Wait for them to cleanup
-			wg.Wait()
-
-			// Add a small delay to ensure file handles are released (fixes EPERM issues with tools like Vite)
-			time.Sleep(1 * time.Second)
-
-			// Loop continues -> restarts all
 		}
 	}
 }
@@ -296,7 +320,7 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 	}
 
 	color := getModuleColor(index)
-	prefix := fmt.Sprintf("[DEBUG-%s%s%s] ", color, p.Path, colorReset)
+	prefix := fmt.Sprintf("[%s%s%s] ", color, p.Path, colorReset)
 	var out, errOut io.Writer
 
 	if multi {
@@ -346,8 +370,9 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 }
 
 // hasChanges checks if any file in root has been modified since sinceTime
-func hasChanges(root string, sinceTime time.Time) (bool, error) {
+func hasChanges(root string, sinceTime time.Time) (bool, string, error) {
 	var changed bool
+	var changedFile string
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -375,15 +400,16 @@ func hasChanges(root string, sinceTime time.Time) (bool, error) {
 
 		if info.ModTime().After(sinceTime) {
 			changed = true
+			changedFile = path
 			return io.EOF // Stop walking
 		}
 		return nil
 	})
 
 	if err == io.EOF {
-		return true, nil
+		return true, changedFile, nil
 	}
-	return changed, err
+	return changed, "", err
 }
 
 // PrefixWriter wraps an io.Writer and prefixes each line with a given prefix

@@ -9,6 +9,11 @@
         "test": "go test .",
         "build": "go build -v"
     },
+    "package.json": {
+        "run": "npm run dev",
+        "test": "npm test",
+        "build": "npm run build"
+    },
     "Package.swift": {
         "run": "swift run",
         "test": "swift test",

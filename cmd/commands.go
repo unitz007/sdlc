@@ -166,6 +166,42 @@ func runTask(ctx context.Context, wd, action string) error {
 		fmt.Printf("[SDLC] Multiple projects detected. Running all modules by default.\n")
 	}
 
+	// Dry-run mode: simulate what would happen without executing commands
+	if dryRun {
+		fmt.Printf("[SDLC] DRY-RUN: would %s on %d module(s)\n", action, len(selectedProjects))
+		for i, p := range selectedProjects {
+			env, args := prepareProjectEnv(p, rootEnvConfig)
+			cmdStr, err := p.Task.Command(action)
+			if err != nil {
+				fmt.Printf("[DRY-RUN] %s: invalid command for action %s: %v\n", p.Path, action, err)
+				continue
+			}
+			if len(args) > 0 {
+				cmdStr = cmdStr + " " + strings.Join(args, " ")
+			}
+
+			// Substitute environment variables in the command string
+			keys := make([]string, 0, len(env))
+			for k := range env {
+				keys = append(keys, k)
+			}
+			sort.Slice(keys, func(i, j int) bool {
+				return len(keys[i]) > len(keys[j])
+			})
+			for _, k := range keys {
+				v := env[k]
+				cmdStr = strings.ReplaceAll(cmdStr, fmt.Sprintf("${%s}", k), v)
+				cmdStr = strings.ReplaceAll(cmdStr, fmt.Sprintf("$%s", k), v)
+			}
+
+			color := getModuleColor(i)
+			prefix := fmt.Sprintf("[%s%s%s] ", color, p.Path, colorReset)
+			fmt.Printf(" - %s%s\n", prefix, cmdStr)
+		}
+		// Do not perform any actions in dry-run mode
+		return nil
+	}
+
 	if watchMode {
 		fmt.Printf("[SDLC] Watch mode enabled. Watching for changes in detected projects...\n")
 		return watchAndRunLoop(ctx, selectedProjects, action, rootEnvConfig)

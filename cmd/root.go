@@ -13,8 +13,10 @@ var (
 	workDir    string
 	extraArgs  string
 	targetMod  string
+	ignoreMods []string
 	runAllMods bool
 	watchMode  bool
+	dryRun     bool
 )
 
 // RootCmd represents the base command when called without any subcommands
@@ -40,8 +42,10 @@ func init() {
 	RootCmd.PersistentFlags().StringVarP(&extraArgs, "extra-args", "e", "", "Extra arguments to pass to the build tool")
 	RootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "Path to directory for configuration file")
 	RootCmd.PersistentFlags().StringVarP(&targetMod, "module", "m", "", "Specific module/path to run (relative path)")
+	RootCmd.PersistentFlags().StringSliceVarP(&ignoreMods, "ignore", "i", []string{}, "Ignore specific modules (by path or name)")
 	RootCmd.PersistentFlags().BoolVarP(&runAllMods, "all", "a", false, "Run command for all detected modules")
 	RootCmd.PersistentFlags().BoolVarP(&watchMode, "watch", "w", false, "Watch for file changes and restart")
+	RootCmd.PersistentFlags().BoolVarP(&dryRun, "dry-run", "n", false, "Show what would happen without executing commands (dry run)")
 }
 
 // resolveWorkDir handles the directory resolution logic including tilde expansion

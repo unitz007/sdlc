@@ -22,14 +22,15 @@ import (
 )
 
 const (
-	colorReset   = "\033[0m"
-	colorRed     = "\033[31m"
-	colorGreen   = "\033[32m"
-	colorYellow  = "\033[33m"
-	colorBlue    = "\033[34m"
-	colorMagenta = "\033[35m"
-	colorCyan    = "\033[36m"
-	colorWhite   = "\033[37m"
+	colorReset    = "\033[0m"
+	colorRed      = "\033[31m"
+	colorGreen    = "\033[32m"
+	colorYellow   = "\033[33m"
+	colorBlue     = "\033[34m"
+	colorMagenta  = "\033[35m"
+	colorCyan     = "\033[36m"
+	colorWhite    = "\033[37m"
+	colorDarkGrey = "\033[90m"
 )
 
 var moduleColors = []string{
@@ -143,8 +144,22 @@ func runTask(ctx context.Context, wd, action string) error {
 	if len(projects) > 1 {
 		fmt.Printf("[SDLC] Multi-module project detected (%d modules):\n", len(projects))
 		for i, p := range projects {
-			color := getModuleColor(i)
-			fmt.Printf(" • %s%s%s (%s)\n", color, p.Path, colorReset, p.Name)
+			isIgnored := false
+			if len(ignoreMods) > 0 {
+				for _, ignore := range ignoreMods {
+					if p.Path == ignore || p.Name == ignore {
+						isIgnored = true
+						break
+					}
+				}
+			}
+
+			if isIgnored {
+				fmt.Printf(" %s✘ %s (%s) [IGNORED]%s\n", colorDarkGrey, p.Path, p.Name, colorReset)
+			} else {
+				color := getModuleColor(i)
+				fmt.Printf(" %s✔%s %s%s%s (%s)\n", colorGreen, colorReset, color, p.Path, colorReset, p.Name)
+			}
 		}
 		fmt.Println()
 	}
@@ -156,7 +171,10 @@ func runTask(ctx context.Context, wd, action string) error {
 	}
 
 	// Filter projects based on flags
-	selectedProjects := filterProjects(projects)
+	selectedProjects, err := filterProjects(projects)
+	if err != nil {
+		return err
+	}
 
 	if len(selectedProjects) == 0 {
 		return fmt.Errorf("no projects matched the criteria")
@@ -164,6 +182,42 @@ func runTask(ctx context.Context, wd, action string) error {
 
 	if len(selectedProjects) > 1 && !runAllMods {
 		fmt.Printf("[SDLC] Multiple projects detected. Running all modules by default.\n")
+	}
+
+	// Dry-run mode: simulate what would happen without executing commands
+	if dryRun {
+		fmt.Printf("[SDLC] DRY-RUN: would %s on %d module(s)\n", action, len(selectedProjects))
+		for i, p := range selectedProjects {
+			env, args := prepareProjectEnv(p, rootEnvConfig)
+			cmdStr, err := p.Task.Command(action)
+			if err != nil {
+				fmt.Printf("[DRY-RUN] %s: invalid command for action %s: %v\n", p.Path, action, err)
+				continue
+			}
+			if len(args) > 0 {
+				cmdStr = cmdStr + " " + strings.Join(args, " ")
+			}
+
+			// Substitute environment variables in the command string
+			keys := make([]string, 0, len(env))
+			for k := range env {
+				keys = append(keys, k)
+			}
+			sort.Slice(keys, func(i, j int) bool {
+				return len(keys[i]) > len(keys[j])
+			})
+			for _, k := range keys {
+				v := env[k]
+				cmdStr = strings.ReplaceAll(cmdStr, fmt.Sprintf("${%s}", k), v)
+				cmdStr = strings.ReplaceAll(cmdStr, fmt.Sprintf("$%s", k), v)
+			}
+
+			color := getModuleColor(i)
+			prefix := fmt.Sprintf("[%s%s%s] ", color, p.Path, colorReset)
+			fmt.Printf(" - %s%s\n", prefix, cmdStr)
+		}
+		// Do not perform any actions in dry-run mode
+		return nil
 	}
 
 	if watchMode {
@@ -450,29 +504,51 @@ func (pw *PrefixWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-func filterProjects(projects []engine.Project) []engine.Project {
+func filterProjects(projects []engine.Project) ([]engine.Project, error) {
+	// Handle ignore flags
+	if len(ignoreMods) > 0 {
+		if len(projects) <= 1 {
+			return nil, fmt.Errorf("--ignore flag is only supported in multi-module projects")
+		}
+
+		var filtered []engine.Project
+		for _, p := range projects {
+			ignored := false
+			for _, ignore := range ignoreMods {
+				if p.Path == ignore || p.Name == ignore {
+					ignored = true
+					break
+				}
+			}
+			if !ignored {
+				filtered = append(filtered, p)
+			}
+		}
+		projects = filtered
+	}
+
 	if runAllMods {
-		return projects
+		return projects, nil
 	}
 
 	if targetMod != "" {
 		for _, p := range projects {
 			if p.Path == targetMod {
-				return []engine.Project{p}
+				return []engine.Project{p}, nil
 			}
 		}
-		return []engine.Project{}
+		return []engine.Project{}, nil
 	}
 
 	// If only one project exists, default to it
 	if len(projects) == 1 {
-		return projects
+		return projects, nil
 	}
 
 	// Otherwise return empty list (caller will handle ambiguous case)
 	// Actually, returning all projects here and letting the caller decide
 	// based on count is better for the error message "multiple projects found"
-	return projects
+	return projects, nil
 }
 
 func printBanner() {

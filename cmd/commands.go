@@ -282,7 +282,11 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, action stri
 		go func() {
 			defer wg.Done()
 			env, args := prepareProjectEnv(p, rootEnvConfig)
-			runProject(runCtx, p, idx, action, env, args, len(projects) > 1)
+			// Pass a derived context that handles cancellation properly
+			err := runProject(runCtx, p, idx, action, env, args, len(projects) > 1)
+			if err != nil && err != context.Canceled {
+				fmt.Printf("[SDLC] Module %s exited with error: %v\n", p.Name, err)
+			}
 		}()
 	}
 
@@ -302,10 +306,25 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, action stri
 			for _, s := range states {
 				s.cancel()
 			}
-			for _, s := range states {
-				s.wg.Wait()
-			}
 			mu.Unlock()
+
+			// Wait for all goroutines to finish with a timeout
+			done := make(chan struct{})
+			go func() {
+				mu.Lock()
+				defer mu.Unlock()
+				for _, s := range states {
+					s.wg.Wait()
+				}
+				close(done)
+			}()
+
+			select {
+			case <-done:
+				fmt.Println("[SDLC] All modules stopped gracefully")
+			case <-time.After(5 * time.Second):
+				fmt.Println("[SDLC] Timeout waiting for modules to stop")
+			}
 			return nil
 
 		case <-ticker.C:

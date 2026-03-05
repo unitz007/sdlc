@@ -22,14 +22,15 @@ import (
 )
 
 const (
-	colorReset   = "\033[0m"
-	colorRed     = "\033[31m"
-	colorGreen   = "\033[32m"
-	colorYellow  = "\033[33m"
-	colorBlue    = "\033[34m"
-	colorMagenta = "\033[35m"
-	colorCyan    = "\033[36m"
-	colorWhite   = "\033[37m"
+	colorReset    = "\033[0m"
+	colorRed      = "\033[31m"
+	colorGreen    = "\033[32m"
+	colorYellow   = "\033[33m"
+	colorBlue     = "\033[34m"
+	colorMagenta  = "\033[35m"
+	colorCyan     = "\033[36m"
+	colorWhite    = "\033[37m"
+	colorDarkGrey = "\033[90m"
 )
 
 var moduleColors = []string{
@@ -143,8 +144,22 @@ func runTask(ctx context.Context, wd, action string) error {
 	if len(projects) > 1 {
 		fmt.Printf("[SDLC] Multi-module project detected (%d modules):\n", len(projects))
 		for i, p := range projects {
-			color := getModuleColor(i)
-			fmt.Printf(" • %s%s%s (%s)\n", color, p.Path, colorReset, p.Name)
+			isIgnored := false
+			if len(ignoreMods) > 0 {
+				for _, ignore := range ignoreMods {
+					if p.Path == ignore || p.Name == ignore {
+						isIgnored = true
+						break
+					}
+				}
+			}
+
+			if isIgnored {
+				fmt.Printf(" %s✘ %s (%s) [IGNORED]%s\n", colorDarkGrey, p.Path, p.Name, colorReset)
+			} else {
+				color := getModuleColor(i)
+				fmt.Printf(" %s✔%s %s%s%s (%s)\n", colorGreen, colorReset, color, p.Path, colorReset, p.Name)
+			}
 		}
 		fmt.Println()
 	}

@@ -156,7 +156,10 @@ func runTask(ctx context.Context, wd, action string) error {
 	}
 
 	// Filter projects based on flags
-	selectedProjects := filterProjects(projects)
+	selectedProjects, err := filterProjects(projects)
+	if err != nil {
+		return err
+	}
 
 	if len(selectedProjects) == 0 {
 		return fmt.Errorf("no projects matched the criteria")
@@ -486,29 +489,51 @@ func (pw *PrefixWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-func filterProjects(projects []engine.Project) []engine.Project {
+func filterProjects(projects []engine.Project) ([]engine.Project, error) {
+	// Handle ignore flags
+	if len(ignoreMods) > 0 {
+		if len(projects) <= 1 {
+			return nil, fmt.Errorf("--ignore flag is only supported in multi-module projects")
+		}
+
+		var filtered []engine.Project
+		for _, p := range projects {
+			ignored := false
+			for _, ignore := range ignoreMods {
+				if p.Path == ignore || p.Name == ignore {
+					ignored = true
+					break
+				}
+			}
+			if !ignored {
+				filtered = append(filtered, p)
+			}
+		}
+		projects = filtered
+	}
+
 	if runAllMods {
-		return projects
+		return projects, nil
 	}
 
 	if targetMod != "" {
 		for _, p := range projects {
 			if p.Path == targetMod {
-				return []engine.Project{p}
+				return []engine.Project{p}, nil
 			}
 		}
-		return []engine.Project{}
+		return []engine.Project{}, nil
 	}
 
 	// If only one project exists, default to it
 	if len(projects) == 1 {
-		return projects
+		return projects, nil
 	}
 
 	// Otherwise return empty list (caller will handle ambiguous case)
 	// Actually, returning all projects here and letting the caller decide
 	// based on count is better for the error message "multiple projects found"
-	return projects
+	return projects, nil
 }
 
 func printBanner() {

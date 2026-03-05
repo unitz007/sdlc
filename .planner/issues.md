@@ -108,6 +108,18 @@
     - [x] Applies module-specific env vars and args from module config (overriding root)
     - [x] Supports environment variable substitution in commands
 
+- [x] **ISSUE-011**
+  - **Title**: Ignore modules in multi-module projects
+  - **Type**: feature
+  - **Priority**: P2
+  - **Effort**: S
+  - **Description**: Add `--ignore` flag to exclude specific modules from execution in a multi-module setup. This should strictly be allowed only for multi-module projects.
+  - **Acceptance Criteria**:
+    - [x] `--ignore <module>` skips the specified module.
+    - [x] Supports multiple `--ignore` flags or comma-separated list.
+    - [x] Errors if used in a single-module project.
+  - **Dependencies**: none
+
 - [ ] **ISSUE-009**
   - **Title**: Interactive module selection
   - **Type**: feature

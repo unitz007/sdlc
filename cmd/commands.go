@@ -591,29 +591,99 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 	// If interactive mode is not possible (e.g. non-terminal), default to all
 	// For now, we assume terminal is available if we are here.
 
-	items := []string{"Run all modules"}
-	for _, p := range projects {
-		items = append(items, fmt.Sprintf("%s (%s)", p.Name, p.Path))
+	// Use promptui's Select to implement a multi-select simulation since MultiSelect is not stable in all promptui versions
+	// Or we can use a loop to let user toggle.
+	// But simpler is to list all modules and let user select one or "All".
+	// The user asked to "select multiple projects".
+	// A common pattern with promptui for multiselect is to use a loop or custom template, 
+	// but here we can try a simple checklist approach if we want to be fancy, 
+	// or just use a loop where user picks modules until they say "Done".
+
+	// Let's implement a loop where user can toggle selection.
+	
+	selected := make(map[int]bool)
+	// Default to none selected initially? Or all? 
+	// Let's default to all selected initially.
+	for i := range projects {
+		selected[i] = true
 	}
 
-	prompt := promptui.Select{
-		Label: "Multiple modules detected. Select which one to run",
-		Items: items,
-		Size:  len(items) + 1,
+	for {
+		items := []string{"[Done] Run selected modules"}
+		for i, p := range projects {
+			prefix := "[ ]"
+			if selected[i] {
+				prefix = "[x]"
+			}
+			items = append(items, fmt.Sprintf("%s %s (%s)", prefix, p.Name, p.Path))
+		}
+
+		prompt := promptui.Select{
+			Label: "Select modules to run (Select to toggle)",
+			Items: items,
+			Size:  len(items) + 1,
+		}
+
+		idx, _, err := prompt.Run()
+		if err != nil {
+			return nil, fmt.Errorf("prompt failed: %w", err)
+		}
+
+		if idx == 0 {
+			break
+		}
+
+		// Toggle selection
+		projectIdx := idx - 1
+		selected[projectIdx] = !selected[projectIdx]
 	}
 
-	idx, _, err := prompt.Run()
-	if err != nil {
-		return nil, fmt.Errorf("prompt failed: %w", err)
+	var result []engine.Project
+	for i, p := range projects {
+		if selected[i] {
+			result = append(result, p)
+		} else {
+			// Add to ignore list for display purposes later if we want to show ignored status
+			// But the current logic in filterProjects handles ignores. 
+			// Here we are returning the *selected* projects.
+			// If we want the UI to show "Ignored", we might need to populate ignoreMods global?
+			// Or just return the subset. The caller expects the subset of projects to run.
+			// However, if we want the "Ignored" UI to show up in the list later, we need to 
+			// ensure the unselected ones are treated as "ignored".
+			// The current executeTask logic prints "Multi-module project detected" based on the *initial* detection,
+			// but then iterates over *projects* (which is the full list) to show status.
+			// Wait, executeTask calls filterProjects -> selectedProjects.
+			// Then promptModuleSelection filters *selectedProjects* further.
+			// Then executeTask iterates over *selectedProjects* to run.
+			
+			// The "Multi-module project detected" block at the top of executeTask prints ALL projects 
+			// and checks ignoreMods global to show [IGNORED].
+			// If we filter here, we are effectively removing them from the execution list.
+			// If we want the [IGNORED] UI to appear, we should probably update the ignoreMods list
+			// or change how executeTask works.
+			
+			// Let's update the global ignoreMods list based on unselected items so the UI reflects it?
+			// But promptModuleSelection is called AFTER the initial list printing in executeTask?
+			// Actually, let's check where promptModuleSelection is called.
+			// It is called lines 192-198.
+			// The initial printing happens BEFORE that (lines 142-155).
+			// So the initial list is already printed.
+			// If we want to show the ignored status, we might need to print the list AGAIN or 
+			// rely on the user knowing what they selected.
+			
+			// The user requirement: "we need to be able to select multiple projects to run in the interactive section and the others ignored"
+			// Implicitly, this means the execution should respect the selection.
+			
+			// Let's return the selected subset.
+			ignoreMods = append(ignoreMods, p.Path)
+		}
+	}
+	
+	if len(result) == 0 {
+		return nil, fmt.Errorf("no modules selected")
 	}
 
-	if idx == 0 {
-		return projects, nil
-	}
-
-	// Adjust index because "Run all modules" is at 0
-	selectedProject := projects[idx-1]
-	return []engine.Project{selectedProject}, nil
+	return result, nil
 }
 
 func printBanner() {

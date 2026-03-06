@@ -142,29 +142,6 @@ func runTask(ctx context.Context, wd, action string) error {
 		return fmt.Errorf("no project configured or detected in %s", wd)
 	}
 
-	if len(projects) > 1 {
-		fmt.Printf("[SDLC] Multi-module project detected (%d modules):\n", len(projects))
-		for i, p := range projects {
-			isIgnored := false
-			if len(ignoreMods) > 0 {
-				for _, ignore := range ignoreMods {
-					if p.Path == ignore || p.Name == ignore {
-						isIgnored = true
-						break
-					}
-				}
-			}
-
-			if isIgnored {
-				fmt.Printf(" %s✘ %s (%s) [IGNORED]%s\n", colorDarkGrey, p.Path, p.Name, colorReset)
-			} else {
-				color := getModuleColor(i)
-				fmt.Printf(" %s✔%s %s%s%s (%s)\n", colorGreen, colorReset, color, p.Path, colorReset, p.Name)
-			}
-		}
-		fmt.Println()
-	}
-
 	// Load root .sdlc.conf if available
 	rootEnvConfig, err := config.LoadEnvConfig(wd)
 	if err != nil {
@@ -182,19 +159,34 @@ func runTask(ctx context.Context, wd, action string) error {
 	}
 
 	// Interactive selection if multiple projects found and no specific flags were set
-	// We check if the user *explicitly* requested all modules or a specific module.
-	// If filterProjects returned multiple projects, it means either --all was set,
-	// or no filters were applied and it defaulted to returning everything.
-	// We need to distinguish "defaulted to all" from "explicitly requested all".
-	// However, filterProjects handles --all and --module.
-	// If we are here and len > 1, and runAllMods is FALSE, it means we are in the ambiguous state.
-
 	if len(selectedProjects) > 1 && !runAllMods && targetMod == "" && len(ignoreMods) == 0 {
 		// This is the case where we want to prompt
 		selectedProjects, err = promptModuleSelection(selectedProjects)
 		if err != nil {
 			return err
 		}
+	}
+
+	if len(projects) > 1 {
+		fmt.Printf("[SDLC] Multi-module project detected (%d modules):\n", len(projects))
+		for i, p := range projects {
+			// Check if project is in selectedProjects
+			isSelected := false
+			for _, sp := range selectedProjects {
+				if sp.Path == p.Path {
+					isSelected = true
+					break
+				}
+			}
+
+			if !isSelected {
+				fmt.Printf(" %s✘ %s (%s) [IGNORED]%s\n", colorDarkGrey, p.Path, p.Name, colorReset)
+			} else {
+				color := getModuleColor(i)
+				fmt.Printf(" %s✔%s %s%s%s (%s)\n", colorGreen, colorReset, color, p.Path, colorReset, p.Name)
+			}
+		}
+		fmt.Println()
 	}
 
 	if len(selectedProjects) > 1 && !runAllMods {

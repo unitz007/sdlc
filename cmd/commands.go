@@ -231,25 +231,42 @@ func runTask(ctx context.Context, wd, action string) error {
 
 	if watchMode {
 		fmt.Printf("[SDLC] Watch mode enabled. Watching for changes in detected projects...\n")
-		return watchAndRunLoop(ctx, selectedProjects, action, rootEnvConfig)
+		// Need to pass original projects list or a map to find correct index for coloring inside watchAndRunLoop?
+		// Currently watchAndRunLoop uses the index from the passed slice.
+		// Let's update watchAndRunLoop to handle coloring consistently too, or pass a color map.
+		// For simplicity, let's just pass selectedProjects and let it run.
+		// But colors might shift if we select subset.
+		// To fix coloring, we can attach color to Project struct or look it up.
+		// For now, let's fix the execution loop first.
+		return watchAndRunLoop(ctx, selectedProjects, projects, action, rootEnvConfig)
 	}
 
 	// Execute for each selected project once
 	var wg sync.WaitGroup
 	for i, project := range selectedProjects {
 		wg.Add(1)
+
+		// Find the correct index in the original projects list for consistent coloring
+		originalIdx := i
+		for idx, p := range projects {
+			if p.Path == project.Path {
+				originalIdx = idx
+				break
+			}
+		}
+
 		go func(p engine.Project, index int) {
 			defer wg.Done()
 			env, args := prepareProjectEnv(p, rootEnvConfig)
 			runProject(ctx, p, index, action, env, args, len(selectedProjects) > 1)
-		}(project, i)
+		}(project, originalIdx)
 	}
 
 	wg.Wait()
 	return nil
 }
 
-func watchAndRunLoop(ctx context.Context, projects []engine.Project, action string, rootEnvConfig *config.EnvSettings) error {
+func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects []engine.Project, action string, rootEnvConfig *config.EnvSettings) error {
 	fmt.Println("[SDLC] Starting smart watchAndRunLoop")
 	defer fmt.Println("[SDLC] Exiting watchAndRunLoop")
 
@@ -263,7 +280,7 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, action stri
 	var mu sync.Mutex
 
 	// Helper to start (or restart) a project
-	startProject := func(p engine.Project, idx int) {
+	startProject := func(p engine.Project) {
 		mu.Lock()
 		defer mu.Unlock()
 
@@ -288,6 +305,15 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, action stri
 		}
 		states[p.Path] = newState
 
+		// Find original index for coloring
+		idx := 0
+		for i, original := range allProjects {
+			if original.Path == p.Path {
+				idx = i
+				break
+			}
+		}
+
 		go func() {
 			defer wg.Done()
 			env, args := prepareProjectEnv(p, rootEnvConfig)
@@ -300,8 +326,8 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, action stri
 	}
 
 	// Initial start
-	for i, p := range projects {
-		startProject(p, i)
+	for _, p := range projects {
+		startProject(p)
 	}
 
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -338,7 +364,7 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, action stri
 
 		case <-ticker.C:
 			// Check for changes
-			for i, p := range projects {
+			for _, p := range projects {
 				mu.Lock()
 				s, ok := states[p.Path]
 				mu.Unlock()
@@ -355,7 +381,7 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, action stri
 
 				if changed {
 					fmt.Printf("\n[SDLC] File change detected: %s in %s. Restarting module...\n", filepath.Base(changedFile), p.Path)
-					startProject(p, i)
+					startProject(p)
 				}
 			}
 		}
@@ -587,14 +613,14 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 	// Or we can use a loop to let user toggle.
 	// But simpler is to list all modules and let user select one or "All".
 	// The user asked to "select multiple projects".
-	// A common pattern with promptui for multiselect is to use a loop or custom template, 
-	// but here we can try a simple checklist approach if we want to be fancy, 
+	// A common pattern with promptui for multiselect is to use a loop or custom template,
+	// but here we can try a simple checklist approach if we want to be fancy,
 	// or just use a loop where user picks modules until they say "Done".
 
 	// Let's implement a loop where user can toggle selection.
-	
+
 	selected := make(map[int]bool)
-	// Default to none selected initially? Or all? 
+	// Default to none selected initially? Or all?
 	// Let's default to all selected initially.
 	for i := range projects {
 		selected[i] = true
@@ -636,41 +662,41 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 			result = append(result, p)
 		} else {
 			// Add to ignore list for display purposes later if we want to show ignored status
-			// But the current logic in filterProjects handles ignores. 
+			// But the current logic in filterProjects handles ignores.
 			// Here we are returning the *selected* projects.
 			// If we want the UI to show "Ignored", we might need to populate ignoreMods global?
 			// Or just return the subset. The caller expects the subset of projects to run.
-			// However, if we want the "Ignored" UI to show up in the list later, we need to 
+			// However, if we want the "Ignored" UI to show up in the list later, we need to
 			// ensure the unselected ones are treated as "ignored".
 			// The current executeTask logic prints "Multi-module project detected" based on the *initial* detection,
 			// but then iterates over *projects* (which is the full list) to show status.
 			// Wait, executeTask calls filterProjects -> selectedProjects.
 			// Then promptModuleSelection filters *selectedProjects* further.
 			// Then executeTask iterates over *selectedProjects* to run.
-			
-			// The "Multi-module project detected" block at the top of executeTask prints ALL projects 
+
+			// The "Multi-module project detected" block at the top of executeTask prints ALL projects
 			// and checks ignoreMods global to show [IGNORED].
 			// If we filter here, we are effectively removing them from the execution list.
 			// If we want the [IGNORED] UI to appear, we should probably update the ignoreMods list
 			// or change how executeTask works.
-			
+
 			// Let's update the global ignoreMods list based on unselected items so the UI reflects it?
 			// But promptModuleSelection is called AFTER the initial list printing in executeTask?
 			// Actually, let's check where promptModuleSelection is called.
 			// It is called lines 192-198.
 			// The initial printing happens BEFORE that (lines 142-155).
 			// So the initial list is already printed.
-			// If we want to show the ignored status, we might need to print the list AGAIN or 
+			// If we want to show the ignored status, we might need to print the list AGAIN or
 			// rely on the user knowing what they selected.
-			
+
 			// The user requirement: "we need to be able to select multiple projects to run in the interactive section and the others ignored"
 			// Implicitly, this means the execution should respect the selection.
-			
+
 			// Let's return the selected subset.
 			ignoreMods = append(ignoreMods, p.Path)
 		}
 	}
-	
+
 	if len(result) == 0 {
 		return nil, fmt.Errorf("no modules selected")
 	}

@@ -18,6 +18,7 @@ import (
 	"sdlc/engine"
 	"sdlc/lib"
 
+	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 )
 
@@ -178,6 +179,22 @@ func runTask(ctx context.Context, wd, action string) error {
 
 	if len(selectedProjects) == 0 {
 		return fmt.Errorf("no projects matched the criteria")
+	}
+
+	// Interactive selection if multiple projects found and no specific flags were set
+	// We check if the user *explicitly* requested all modules or a specific module.
+	// If filterProjects returned multiple projects, it means either --all was set,
+	// or no filters were applied and it defaulted to returning everything.
+	// We need to distinguish "defaulted to all" from "explicitly requested all".
+	// However, filterProjects handles --all and --module.
+	// If we are here and len > 1, and runAllMods is FALSE, it means we are in the ambiguous state.
+
+	if len(selectedProjects) > 1 && !runAllMods && targetMod == "" && len(ignoreMods) == 0 {
+		// This is the case where we want to prompt
+		selectedProjects, err = promptModuleSelection(selectedProjects)
+		if err != nil {
+			return err
+		}
 	}
 
 	if len(selectedProjects) > 1 && !runAllMods {
@@ -568,6 +585,35 @@ func filterProjects(projects []engine.Project) ([]engine.Project, error) {
 	// Actually, returning all projects here and letting the caller decide
 	// based on count is better for the error message "multiple projects found"
 	return projects, nil
+}
+
+func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) {
+	// If interactive mode is not possible (e.g. non-terminal), default to all
+	// For now, we assume terminal is available if we are here.
+
+	items := []string{"Run all modules"}
+	for _, p := range projects {
+		items = append(items, fmt.Sprintf("%s (%s)", p.Name, p.Path))
+	}
+
+	prompt := promptui.Select{
+		Label: "Multiple modules detected. Select which one to run",
+		Items: items,
+		Size:  len(items) + 1,
+	}
+
+	idx, _, err := prompt.Run()
+	if err != nil {
+		return nil, fmt.Errorf("prompt failed: %w", err)
+	}
+
+	if idx == 0 {
+		return projects, nil
+	}
+
+	// Adjust index because "Run all modules" is at 0
+	selectedProject := projects[idx-1]
+	return []engine.Project{selectedProject}, nil
 }
 
 func printBanner() {

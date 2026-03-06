@@ -636,10 +636,20 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 			items = append(items, fmt.Sprintf("%s %s (%s)", prefix, p.Name, p.Path))
 		}
 
+		// Use a custom templates to avoid excessive newlines if needed,
+		// but primarily we want to clear the screen or just rely on promptui's behavior.
+		// However, promptui by default redraws in place if stdout is terminal.
+		// The issue "log every click" might refer to the fact that promptui prints the final selection 
+		// to stdout when you press enter.
+		// To suppress that, we can set HideSelected: true in templates?
+		// But Select struct doesn't have HideSelected. It has HideSelected bool.
+		// Let's try HideSelected: true.
+
 		prompt := promptui.Select{
 			Label: "Select modules to run (Select to toggle)",
 			Items: items,
 			Size:  len(items) + 1,
+			HideSelected: true,
 		}
 
 		idx, _, err := prompt.Run()

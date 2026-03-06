@@ -49,6 +49,9 @@ sdlc run --watch
 # Run a specific module in a monorepo
 sdlc run --module backend
 
+# Ignore specific modules in a monorepo
+sdlc run --ignore frontend
+
 # Test the project
 sdlc test
 
@@ -79,6 +82,7 @@ sdlc clean
 | `--watch` | `-w` | Enable watch mode to restart on file changes. |
 | `--all` | `-a` | Run command for all detected modules (default behavior if >1 module found). |
 | `--module` | `-m` | Specify a single module/path to run (relative path). |
+| `--ignore` | `-i` | Ignore specific modules in a multi-module project (supports multiple flags). |
 | `--dir` | `-d` | Specify an absolute path to the project directory (default: current dir). |
 | `--extra-args` | `-e` | Pass additional arguments to the underlying build tool. |
 | `--config` | `-c` | Path to a custom configuration directory. |

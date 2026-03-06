@@ -10,7 +10,7 @@
   - **Effort**: S
   - **Description**: The tilde expansion logic in `main.go` uses `strings.ReplaceAll` but discards the result. This means paths starting with `~/` will not work correctly.
   - **Acceptance Criteria**:
-    - [ ] Passing a path with `~/` to `--dir` correctly expands to the user's home directory.
+    - [x] Passing a path with `~/` to `--dir` correctly expands to the user's home directory.
   - **Dependencies**: none
 
 - [x] **ISSUE-010**
@@ -32,9 +32,9 @@
   - **Effort**: M
   - **Description**: The `main` function is getting large and contains logic for CLI parsing, configuration loading, and command execution. This should be split into separate functions or packages for better testability and maintainability.
   - **Acceptance Criteria**:
-    - [ ] CLI logic is separated from business logic.
-    - [ ] Configuration loading is isolated.
-    - [ ] Command execution logic is isolated.
+    - [x] CLI logic is separated from business logic.
+    - [x] Configuration loading is isolated.
+    - [x] Command execution logic is isolated.
   - **Dependencies**: none
 
 ### Features
@@ -45,8 +45,8 @@
   - **Effort**: M
   - **Description**: Extend the detection logic to scan subdirectories for build files, not just the root directory. This is the first step for multi-module support.
   - **Acceptance Criteria**:
-    - [ ] Tool identifies `go.mod`, `pom.xml`, etc., in immediate subdirectories.
-    - [ ] Returns a list of all detected modules/paths.
+    - [x] Tool identifies `go.mod`, `pom.xml`, etc., in immediate subdirectories.
+    - [x] Returns a list of all detected modules/paths.
   - **Dependencies**: ISSUE-002 (Refactoring makes this easier)
 
 - [x] **ISSUE-004**
@@ -56,8 +56,8 @@
   - **Effort**: M
   - **Description**: Add CLI flags to control which module(s) to run.
   - **Acceptance Criteria**:
-    - [ ] `--module <name>` or `--path <path>` runs a specific module.
-    - [ ] `--all` runs the command for all detected modules.
+    - [x] `--module <name>` or `--path <path>` runs a specific module.
+    - [x] `--all` runs the command for all detected modules.
   - **Dependencies**: ISSUE-003
 
 - [x] **ISSUE-005**
@@ -67,9 +67,9 @@
   - **Effort**: L
   - **Description**: When running multiple modules (e.g., backend and frontend), they should run in parallel/concurrently so one doesn't block the other.
   - **Acceptance Criteria**:
-    - [ ] `sdlc run --all` starts processes concurrently.
-    - [ ] Output from both processes is streamed (prefixed or managed).
-    - [ ] Ctrl+C stops all processes.
+    - [x] `sdlc run --all` starts processes concurrently.
+    - [x] Output from both processes is streamed (prefixed or managed).
+    - [x] Ctrl+C stops all processes.
   - **Dependencies**: ISSUE-004
 
 - [x] **ISSUE-006**
@@ -79,10 +79,10 @@
   - **Effort**: M
   - **Description**: Add a `--watch` flag that monitors file changes in the project directory and restarts the `run` command or re-runs the `test` command automatically.
   - **Acceptance Criteria**:
-    - [ ] `sdlc run --watch` restarts the process when files change.
-    - [ ] `sdlc test --watch` re-runs tests when files change.
-    - [ ] Debounce changes to prevent rapid restarts.
-    - [ ] Gracefully kill the previous process before restarting.
+    - [x] `sdlc run --watch` restarts the process when files change.
+    - [x] `sdlc test --watch` re-runs tests when files change.
+    - [x] Debounce changes to prevent rapid restarts.
+    - [x] Gracefully kill the previous process before restarting.
   - **Dependencies**: ISSUE-002 (Refactoring makes this easier)
 
 - [x] **ISSUE-007**

@@ -18,6 +18,7 @@ import (
 	"sdlc/engine"
 	"sdlc/lib"
 
+	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 )
 
@@ -141,29 +142,6 @@ func runTask(ctx context.Context, wd, action string) error {
 		return fmt.Errorf("no project configured or detected in %s", wd)
 	}
 
-	if len(projects) > 1 {
-		fmt.Printf("[SDLC] Multi-module project detected (%d modules):\n", len(projects))
-		for i, p := range projects {
-			isIgnored := false
-			if len(ignoreMods) > 0 {
-				for _, ignore := range ignoreMods {
-					if p.Path == ignore || p.Name == ignore {
-						isIgnored = true
-						break
-					}
-				}
-			}
-
-			if isIgnored {
-				fmt.Printf(" %s✘ %s (%s) [IGNORED]%s\n", colorDarkGrey, p.Path, p.Name, colorReset)
-			} else {
-				color := getModuleColor(i)
-				fmt.Printf(" %s✔%s %s%s%s (%s)\n", colorGreen, colorReset, color, p.Path, colorReset, p.Name)
-			}
-		}
-		fmt.Println()
-	}
-
 	// Load root .sdlc.conf if available
 	rootEnvConfig, err := config.LoadEnvConfig(wd)
 	if err != nil {
@@ -178,6 +156,37 @@ func runTask(ctx context.Context, wd, action string) error {
 
 	if len(selectedProjects) == 0 {
 		return fmt.Errorf("no projects matched the criteria")
+	}
+
+	// Interactive selection if multiple projects found and no specific flags were set
+	if len(selectedProjects) > 1 && !runAllMods && targetMod == "" && len(ignoreMods) == 0 {
+		// This is the case where we want to prompt
+		selectedProjects, err = promptModuleSelection(selectedProjects)
+		if err != nil {
+			return err
+		}
+	}
+
+	if len(projects) > 1 {
+		fmt.Printf("[SDLC] Multi-module project detected (%d modules):\n", len(projects))
+		for i, p := range projects {
+			// Check if project is in selectedProjects
+			isSelected := false
+			for _, sp := range selectedProjects {
+				if sp.Path == p.Path {
+					isSelected = true
+					break
+				}
+			}
+
+			if !isSelected {
+				fmt.Printf(" %s✘ %s (%s) [IGNORED]%s\n", colorDarkGrey, p.Path, p.Name, colorReset)
+			} else {
+				color := getModuleColor(i)
+				fmt.Printf(" %s✔%s %s%s%s (%s)\n", colorGreen, colorReset, color, p.Path, colorReset, p.Name)
+			}
+		}
+		fmt.Println()
 	}
 
 	if len(selectedProjects) > 1 && !runAllMods {
@@ -222,25 +231,42 @@ func runTask(ctx context.Context, wd, action string) error {
 
 	if watchMode {
 		fmt.Printf("[SDLC] Watch mode enabled. Watching for changes in detected projects...\n")
-		return watchAndRunLoop(ctx, selectedProjects, action, rootEnvConfig)
+		// Need to pass original projects list or a map to find correct index for coloring inside watchAndRunLoop?
+		// Currently watchAndRunLoop uses the index from the passed slice.
+		// Let's update watchAndRunLoop to handle coloring consistently too, or pass a color map.
+		// For simplicity, let's just pass selectedProjects and let it run.
+		// But colors might shift if we select subset.
+		// To fix coloring, we can attach color to Project struct or look it up.
+		// For now, let's fix the execution loop first.
+		return watchAndRunLoop(ctx, selectedProjects, projects, action, rootEnvConfig)
 	}
 
 	// Execute for each selected project once
 	var wg sync.WaitGroup
 	for i, project := range selectedProjects {
 		wg.Add(1)
+
+		// Find the correct index in the original projects list for consistent coloring
+		originalIdx := i
+		for idx, p := range projects {
+			if p.Path == project.Path {
+				originalIdx = idx
+				break
+			}
+		}
+
 		go func(p engine.Project, index int) {
 			defer wg.Done()
 			env, args := prepareProjectEnv(p, rootEnvConfig)
 			runProject(ctx, p, index, action, env, args, len(selectedProjects) > 1)
-		}(project, i)
+		}(project, originalIdx)
 	}
 
 	wg.Wait()
 	return nil
 }
 
-func watchAndRunLoop(ctx context.Context, projects []engine.Project, action string, rootEnvConfig *config.EnvSettings) error {
+func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects []engine.Project, action string, rootEnvConfig *config.EnvSettings) error {
 	fmt.Println("[SDLC] Starting smart watchAndRunLoop")
 	defer fmt.Println("[SDLC] Exiting watchAndRunLoop")
 
@@ -254,7 +280,7 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, action stri
 	var mu sync.Mutex
 
 	// Helper to start (or restart) a project
-	startProject := func(p engine.Project, idx int) {
+	startProject := func(p engine.Project) {
 		mu.Lock()
 		defer mu.Unlock()
 
@@ -279,6 +305,15 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, action stri
 		}
 		states[p.Path] = newState
 
+		// Find original index for coloring
+		idx := 0
+		for i, original := range allProjects {
+			if original.Path == p.Path {
+				idx = i
+				break
+			}
+		}
+
 		go func() {
 			defer wg.Done()
 			env, args := prepareProjectEnv(p, rootEnvConfig)
@@ -291,8 +326,8 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, action stri
 	}
 
 	// Initial start
-	for i, p := range projects {
-		startProject(p, i)
+	for _, p := range projects {
+		startProject(p)
 	}
 
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -329,7 +364,7 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, action stri
 
 		case <-ticker.C:
 			// Check for changes
-			for i, p := range projects {
+			for _, p := range projects {
 				mu.Lock()
 				s, ok := states[p.Path]
 				mu.Unlock()
@@ -346,7 +381,7 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, action stri
 
 				if changed {
 					fmt.Printf("\n[SDLC] File change detected: %s in %s. Restarting module...\n", filepath.Base(changedFile), p.Path)
-					startProject(p, i)
+					startProject(p)
 				}
 			}
 		}
@@ -568,6 +603,115 @@ func filterProjects(projects []engine.Project) ([]engine.Project, error) {
 	// Actually, returning all projects here and letting the caller decide
 	// based on count is better for the error message "multiple projects found"
 	return projects, nil
+}
+
+func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) {
+	// If interactive mode is not possible (e.g. non-terminal), default to all
+	// For now, we assume terminal is available if we are here.
+
+	// Use promptui's Select to implement a multi-select simulation since MultiSelect is not stable in all promptui versions
+	// Or we can use a loop to let user toggle.
+	// But simpler is to list all modules and let user select one or "All".
+	// The user asked to "select multiple projects".
+	// A common pattern with promptui for multiselect is to use a loop or custom template,
+	// but here we can try a simple checklist approach if we want to be fancy,
+	// or just use a loop where user picks modules until they say "Done".
+
+	// Let's implement a loop where user can toggle selection.
+
+	selected := make(map[int]bool)
+	// Default to none selected initially? Or all?
+	// Let's default to all selected initially.
+	for i := range projects {
+		selected[i] = true
+	}
+
+	for {
+		items := []string{"[Done] Run selected modules"}
+		for i, p := range projects {
+			prefix := "[ ]"
+			if selected[i] {
+				prefix = "[x]"
+			}
+			items = append(items, fmt.Sprintf("%s %s (%s)", prefix, p.Name, p.Path))
+		}
+
+		// Use a custom templates to avoid excessive newlines if needed,
+		// but primarily we want to clear the screen or just rely on promptui's behavior.
+		// However, promptui by default redraws in place if stdout is terminal.
+		// The issue "log every click" might refer to the fact that promptui prints the final selection 
+		// to stdout when you press enter.
+		// To suppress that, we can set HideSelected: true in templates?
+		// But Select struct doesn't have HideSelected. It has HideSelected bool.
+		// Let's try HideSelected: true.
+
+		prompt := promptui.Select{
+			Label: "Select modules to run (Select to toggle)",
+			Items: items,
+			Size:  len(items) + 1,
+			HideSelected: true,
+		}
+
+		idx, _, err := prompt.Run()
+		if err != nil {
+			return nil, fmt.Errorf("prompt failed: %w", err)
+		}
+
+		if idx == 0 {
+			break
+		}
+
+		// Toggle selection
+		projectIdx := idx - 1
+		selected[projectIdx] = !selected[projectIdx]
+	}
+
+	var result []engine.Project
+	for i, p := range projects {
+		if selected[i] {
+			result = append(result, p)
+		} else {
+			// Add to ignore list for display purposes later if we want to show ignored status
+			// But the current logic in filterProjects handles ignores.
+			// Here we are returning the *selected* projects.
+			// If we want the UI to show "Ignored", we might need to populate ignoreMods global?
+			// Or just return the subset. The caller expects the subset of projects to run.
+			// However, if we want the "Ignored" UI to show up in the list later, we need to
+			// ensure the unselected ones are treated as "ignored".
+			// The current executeTask logic prints "Multi-module project detected" based on the *initial* detection,
+			// but then iterates over *projects* (which is the full list) to show status.
+			// Wait, executeTask calls filterProjects -> selectedProjects.
+			// Then promptModuleSelection filters *selectedProjects* further.
+			// Then executeTask iterates over *selectedProjects* to run.
+
+			// The "Multi-module project detected" block at the top of executeTask prints ALL projects
+			// and checks ignoreMods global to show [IGNORED].
+			// If we filter here, we are effectively removing them from the execution list.
+			// If we want the [IGNORED] UI to appear, we should probably update the ignoreMods list
+			// or change how executeTask works.
+
+			// Let's update the global ignoreMods list based on unselected items so the UI reflects it?
+			// But promptModuleSelection is called AFTER the initial list printing in executeTask?
+			// Actually, let's check where promptModuleSelection is called.
+			// It is called lines 192-198.
+			// The initial printing happens BEFORE that (lines 142-155).
+			// So the initial list is already printed.
+			// If we want to show the ignored status, we might need to print the list AGAIN or
+			// rely on the user knowing what they selected.
+
+			// The user requirement: "we need to be able to select multiple projects to run in the interactive section and the others ignored"
+			// Implicitly, this means the execution should respect the selection.
+
+			// Let's return the selected subset.
+			ignoreMods = append(ignoreMods, p.Path)
+		}
+	}
+
+	if len(result) == 0 {
+		return nil, fmt.Errorf("no modules selected")
+	}
+
+	return result, nil
 }
 
 func printBanner() {

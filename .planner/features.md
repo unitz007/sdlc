@@ -1,15 +1,31 @@
-# Features
-
-## Implemented
-- [x] **Auto-detection**: Identifies project type by scanning for build files (e.g., `pom.xml`, `go.mod`, `Package.swift`).
-- [x] **Unified Commands**: `run`, `test`, `build` commands that map to underlying toolchain commands.
-- [x] **Custom Working Directory**: `--dir` flag to specify the project directory.
-- [x] **Extra Arguments**: `--extraArgs` flag to pass additional arguments to the build tool.
-- [x] **Configuration**: `.sdlc.json` configuration file to define custom project types and commands.
-- [x] **Multi-module Support**: Detect and manage multiple projects within a single repository (monorepo).
-- [x] **Live Reload**: Watch for file changes and automatically restart the application or re-run tests.
-- [x] **Module-specific Configuration**: Support `.sdlc.json` in module directories to override global settings.
-- [x] **Multi-module Argument Passing**: Support `.sdlc.conf` file in root and module directories to define environment variables and flags.
-
-## Planned
-- [ ] **Interactive Selection**: Prompt user to select which module to run if multiple are detected.
+features:
+  - id: FEAT-001
+    name: Core SDLC CLI
+    description: Core functionality of the SDLC CLI tool
+    value: Provides a unified interface for project management
+    technical_impact: high
+    status: completed
+  - id: FEAT-002
+    name: Multi-module Support
+    description: Support for monorepos and multi-module projects
+    value: Enables management of complex project structures
+    technical_impact: high
+    status: completed
+  - id: FEAT-003
+    name: Watch Mode
+    description: Live reload and restart on file changes
+    value: Improves developer productivity
+    technical_impact: medium
+    status: completed
+  - id: FEAT-004
+    name: Configuration Management
+    description: Custom project types and module-specific settings
+    value: Increases flexibility and adaptability
+    technical_impact: medium
+    status: completed
+  - id: FEAT-005
+    name: Interactive Selection
+    description: Prompt user for module selection in multi-module projects
+    value: Enhances user experience in ambiguous scenarios
+    technical_impact: low
+    status: in_progress

@@ -1,133 +1,111 @@
-# Issues
-
-## Backlog
-
-### Bug Fixes
-- [x] **ISSUE-001**
-  - **Title**: Fix tilde expansion in working directory path
-  - **Type**: bug
-  - **Priority**: P1
-  - **Effort**: S
-  - **Description**: The tilde expansion logic in `main.go` uses `strings.ReplaceAll` but discards the result. This means paths starting with `~/` will not work correctly.
-  - **Acceptance Criteria**:
-    - [x] Passing a path with `~/` to `--dir` correctly expands to the user's home directory.
-  - **Dependencies**: none
-
-- [x] **ISSUE-010**
-  - **Title**: Fix multi-module detection duplication
-  - **Type**: bug
-  - **Priority**: P0
-  - **Effort**: S
-  - **Description**: Multi-module projects can be detected multiple times if multiple build files exist in the same directory (e.g. go.mod and package.json), leading to duplicate execution.
-  - **Acceptance Criteria**:
-    - [x] Enforce one project per directory
-    - [x] Prevent duplicate execution of the same module
-  - **Dependencies**: none
-
-### Refactoring
-- [x] **ISSUE-002**
-  - **Title**: Refactor main function into smaller components
-  - **Type**: refactor
-  - **Priority**: P1
-  - **Effort**: M
-  - **Description**: The `main` function is getting large and contains logic for CLI parsing, configuration loading, and command execution. This should be split into separate functions or packages for better testability and maintainability.
-  - **Acceptance Criteria**:
-    - [x] CLI logic is separated from business logic.
-    - [x] Configuration loading is isolated.
-    - [x] Command execution logic is isolated.
-  - **Dependencies**: none
-
-### Features
-- [x] **ISSUE-003**
-  - **Title**: Detect multiple modules in subdirectories
-  - **Type**: feature
-  - **Priority**: P1
-  - **Effort**: M
-  - **Description**: Extend the detection logic to scan subdirectories for build files, not just the root directory. This is the first step for multi-module support.
-  - **Acceptance Criteria**:
-    - [x] Tool identifies `go.mod`, `pom.xml`, etc., in immediate subdirectories.
-    - [x] Returns a list of all detected modules/paths.
-  - **Dependencies**: ISSUE-002 (Refactoring makes this easier)
-
-- [x] **ISSUE-004**
-  - **Title**: Multi-module execution flags
-  - **Type**: feature
-  - **Priority**: P2
-  - **Effort**: M
-  - **Description**: Add CLI flags to control which module(s) to run.
-  - **Acceptance Criteria**:
-    - [x] `--module <name>` or `--path <path>` runs a specific module.
-    - [x] `--all` runs the command for all detected modules.
-  - **Dependencies**: ISSUE-003
-
-- [x] **ISSUE-005**
-  - **Title**: Concurrent execution for 'run' command
-  - **Type**: feature
-  - **Priority**: P2
-  - **Effort**: L
-  - **Description**: When running multiple modules (e.g., backend and frontend), they should run in parallel/concurrently so one doesn't block the other.
-  - **Acceptance Criteria**:
-    - [x] `sdlc run --all` starts processes concurrently.
-    - [x] Output from both processes is streamed (prefixed or managed).
-    - [x] Ctrl+C stops all processes.
-  - **Dependencies**: ISSUE-004
-
-- [x] **ISSUE-006**
-  - **Title**: Watch mode for automatic restart
-  - **Type**: feature
-  - **Priority**: P2
-  - **Effort**: M
-  - **Description**: Add a `--watch` flag that monitors file changes in the project directory and restarts the `run` command or re-runs the `test` command automatically.
-  - **Acceptance Criteria**:
-    - [x] `sdlc run --watch` restarts the process when files change.
-    - [x] `sdlc test --watch` re-runs tests when files change.
-    - [x] Debounce changes to prevent rapid restarts.
-    - [x] Gracefully kill the previous process before restarting.
-  - **Dependencies**: ISSUE-002 (Refactoring makes this easier)
-
-- [x] **ISSUE-007**
-  - **Title**: Module-specific configuration
-  - **Type**: feature
-  - **Priority**: P2
-  - **Effort**: M
-  - **Description**: Allow `.sdlc.json` in module directories to override global settings.
-  - **Acceptance Criteria**:
-    - [x] Local config overrides global config
-    - [x] Supports `run`, `test`, `build` commands
-    - [x] Works with multi-module detection
-
-- [x] **ISSUE-008**
-  - **Title**: Multi-module argument passing (Revised)
-  - **Type**: feature
-  - **Priority**: P1
-  - **Effort**: M
-  - **Description**: Allow `.sdlc.conf` file in each module directory to define environment variables and flags for that module. Root `.sdlc.conf` provides global defaults.
-  - **Acceptance Criteria**:
-    - [x] Loads `.sdlc.conf` (text format: `$VAR=VAL`, `--flag=val`) from root and module directories
-    - [x] Applies global env vars and args from root config
-    - [x] Applies module-specific env vars and args from module config (overriding root)
-    - [x] Supports environment variable substitution in commands
-
-- [x] **ISSUE-011**
-  - **Title**: Ignore modules in multi-module projects
-  - **Type**: feature
-  - **Priority**: P2
-  - **Effort**: S
-  - **Description**: Add `--ignore` flag to exclude specific modules from execution in a multi-module setup. This should strictly be allowed only for multi-module projects.
-  - **Acceptance Criteria**:
-    - [x] `--ignore <module>` skips the specified module.
-    - [x] Supports multiple `--ignore` flags or comma-separated list.
-    - [x] Errors if used in a single-module project.
-  - **Dependencies**: none
-
-- [ ] **ISSUE-009**
-  - **Title**: Interactive module selection
-  - **Type**: feature
-  - **Priority**: P2
-  - **Effort**: M
-  - **Description**: When running a command without specific flags in a multi-module project, prompt the user to select which module(s) to run.
-  - **Acceptance Criteria**:
-    - [ ] Uses a TUI library (e.g., bubbletea or promptui) for selection
-    - [ ] Allows multi-selection
-    - [ ] Defaults to "all" or remembers last selection? (Start with simple selection)
-  - **Dependencies**: none
+issues:
+  - id: ISSUE-001
+    title: Fix tilde expansion in working directory path
+    description: The tilde expansion logic in main.go uses strings.ReplaceAll but discards the result.
+    feature: FEAT-001
+    sprint: SPRINT-001
+    status: DONE
+    priority: P1
+    effort: S
+    story_points: 1
+    assignee: AI_AGENT
+  - id: ISSUE-010
+    title: Fix multi-module detection duplication
+    description: Multi-module projects can be detected multiple times if multiple build files exist in the same directory.
+    feature: FEAT-002
+    sprint: SPRINT-001
+    status: DONE
+    priority: P0
+    effort: S
+    story_points: 2
+    assignee: AI_AGENT
+  - id: ISSUE-002
+    title: Refactor main function into smaller components
+    description: Split main function into separate functions or packages for better testability.
+    feature: FEAT-001
+    sprint: SPRINT-001
+    status: DONE
+    priority: P1
+    effort: M
+    story_points: 3
+    assignee: AI_AGENT
+  - id: ISSUE-003
+    title: Detect multiple modules in subdirectories
+    description: Extend detection logic to scan subdirectories for build files.
+    feature: FEAT-002
+    sprint: SPRINT-001
+    status: DONE
+    priority: P1
+    effort: M
+    story_points: 3
+    assignee: AI_AGENT
+  - id: ISSUE-004
+    title: Multi-module execution flags
+    description: Add CLI flags to control which module(s) to run.
+    feature: FEAT-002
+    sprint: SPRINT-001
+    status: DONE
+    priority: P2
+    effort: M
+    story_points: 3
+    assignee: AI_AGENT
+  - id: ISSUE-005
+    title: Concurrent execution for 'run' command
+    description: Run multiple modules concurrently.
+    feature: FEAT-002
+    sprint: SPRINT-002
+    status: DONE
+    priority: P2
+    effort: L
+    story_points: 5
+    assignee: AI_AGENT
+  - id: ISSUE-006
+    title: Watch mode for automatic restart
+    description: Add --watch flag to monitor file changes and restart.
+    feature: FEAT-003
+    sprint: SPRINT-002
+    status: DONE
+    priority: P2
+    effort: M
+    story_points: 5
+    assignee: AI_AGENT
+  - id: ISSUE-007
+    title: Module-specific configuration
+    description: Allow .sdlc.json in module directories to override global settings.
+    feature: FEAT-004
+    sprint: SPRINT-002
+    status: DONE
+    priority: P2
+    effort: M
+    story_points: 3
+    assignee: AI_AGENT
+  - id: ISSUE-008
+    title: Multi-module argument passing
+    description: Allow .sdlc.conf file in each module directory to define env vars and flags.
+    feature: FEAT-004
+    sprint: SPRINT-002
+    status: DONE
+    priority: P1
+    effort: M
+    story_points: 3
+    assignee: AI_AGENT
+  - id: ISSUE-011
+    title: Ignore modules in multi-module projects
+    description: Add --ignore flag to exclude specific modules.
+    feature: FEAT-002
+    sprint: SPRINT-002
+    status: DONE
+    priority: P2
+    effort: S
+    story_points: 2
+    assignee: AI_AGENT
+  - id: ISSUE-009
+    title: Interactive module selection
+    description: Prompt user to select which module(s) to run when ambiguous.
+    feature: FEAT-005
+    sprint: SPRINT-002
+    status: DONE
+    priority: P2
+    effort: M
+    story_points: 3
+    assignee: AI_AGENT

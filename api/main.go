@@ -29,6 +29,7 @@ func main() {
     mux := http.NewServeMux()
     mux.HandleFunc("/workflows", workflowsHandler)
     mux.HandleFunc("/workflows/", workflowActionHandler)
+    mux.HandleFunc("/healthz", healthHandler)
 
     srv := &http.Server{
         Addr:    ":8080",

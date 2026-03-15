@@ -2,6 +2,7 @@ package lib
 
 import (
 	"context"
+	"testing"
 )
 
 func TestNewExecutor_SingleWord(t *testing.T) {
@@ -15,7 +16,7 @@ func TestNewExecutor_SingleWord(t *testing.T) {
 }
 
 func TestNewExecutor_MultiWord(t *testing.T) {
-	executor := NewExecutor("echo hello world")
+	executor := NewExecutor(context.Background(), "echo hello world")
 	if executor == nil {
 		t.Fatal("NewExecutor(\"echo hello world\") returned nil")
 	}
@@ -25,7 +26,7 @@ func TestNewExecutor_MultiWord(t *testing.T) {
 }
 
 func TestNewExecutor_CommandParsing(t *testing.T) {
-	executor := NewExecutor("go build -v")
+	executor := NewExecutor(context.Background(), "go build -v")
 	if executor.cmd.Path == "" {
 		t.Error("expected cmd.Path to be set")
 	}
@@ -43,7 +44,7 @@ func TestNewExecutor_CommandParsing(t *testing.T) {
 }
 
 func TestExecute_Success(t *testing.T) {
-	executor := NewExecutor("echo hello")
+	executor := NewExecutor(context.Background(), "echo hello")
 	err := executor.Execute()
 	if err != nil {
 		t.Fatalf("Execute() returned unexpected error: %v", err)
@@ -51,7 +52,7 @@ func TestExecute_Success(t *testing.T) {
 }
 
 func TestExecute_InvalidProgram(t *testing.T) {
-	executor := NewExecutor("nonexistent_binary_xyz")
+	executor := NewExecutor(context.Background(), "nonexistent_binary_xyz")
 	err := executor.Execute()
 	if err == nil {
 		t.Fatal("Execute() with invalid program expected error, got nil")

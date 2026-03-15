@@ -170,24 +170,27 @@ func GetConfigFilePath(confDir string) (string, error) {
     return getConfigFile(confDir)
 }
 
-	var configPath string
-	if confDir != "" {
-		configPath = filepath.Join(confDir, configFileName)
-	} else {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("failed to get user home directory: %w", err)
-		}
-		configPath = filepath.Join(homeDir, configFileName)
-	}
+// getConfigFile returns the path to the configuration file (JSON) for the given directory.
+// If confDir is empty it defaults to the user's home directory.
+// It creates an empty file if it does not exist.
+func getConfigFile(confDir string) (string, error) {
+    var configPath string
+    if confDir != "" {
+        configPath = filepath.Join(confDir, configFileName)
+    } else {
+        homeDir, err := os.UserHomeDir()
+        if err != nil {
+            return "", fmt.Errorf("failed to get user home directory: %w", err)
+        }
+        configPath = filepath.Join(homeDir, configFileName)
+    }
 
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		if file, err := os.Create(configPath); err != nil {
-			return "", fmt.Errorf("could not create config file at %s: %w", configPath, err)
-		} else {
-			file.Close()
-		}
-	}
-
-	return configPath, nil
+    if _, err := os.Stat(configPath); os.IsNotExist(err) {
+        if file, err := os.Create(configPath); err != nil {
+            return "", fmt.Errorf("could not create config file at %s: %w", configPath, err)
+        } else {
+            file.Close()
+        }
+    }
+    return configPath, nil
 }

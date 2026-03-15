@@ -416,7 +416,7 @@ func prepareProjectEnv(p engine.Project, rootEnvConfig *config.EnvSettings) (map
 	return finalEnv, finalArgs
 }
 
-func runProject(ctx context.Context, p engine.Project, index int, action string, env map[string]string, args []string, multi bool) error {
+func runProject(ctx context.Context, p engine.Project, index int, action string, env map[string]string, args []string, multi bool) (err error) {
 	// Clean up .vite-temp if it exists, to prevent EPERM errors on restart
 	viteTemp := filepath.Join(p.AbsPath, "node_modules", ".vite-temp")
 	if _, err := os.Stat(viteTemp); err == nil {
@@ -426,6 +426,16 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+
+	// Set status to running and ensure final status is recorded
+	SetStatus(p.Path, "running")
+	defer func() {
+		if err != nil {
+			SetStatus(p.Path, "error")
+		} else {
+			SetStatus(p.Path, "stopped")
+		}
+	}()
 
 	color := getModuleColor(index)
 	prefix := fmt.Sprintf("[%s%s%s] ", color, p.Path, colorReset)
@@ -443,8 +453,13 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 	// Construct command arguments string
 	cmdArgsStr := strings.Join(args, " ")
 
-	// Execute command
-	cmdStr, err := p.Task.Command(action)
+	// Execute command, using plugin if registered
+	var cmdStr string
+	if plugin, ok := plugins.GetPlugin(action); ok {
+		cmdStr, err = plugin.Command(p)
+	} else {
+		cmdStr, err = p.Task.Command(action)
+	}
 	if err != nil {
 		fmt.Fprintf(errOut, "Error getting command: %v\n", err)
 		return err

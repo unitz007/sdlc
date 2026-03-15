@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"sdlc/lib"
 	"strings"
+	"gopkg.in/yaml.v3"
 )
+
 
 const (
 	configFileName = ".sdlc.json"
@@ -83,7 +85,35 @@ func LoadEnvConfig(dir string) (*EnvSettings, error) {
 	return config, nil
 }
 
-// Load reads the .sdlc.json configuration file from the given directory path.
+
+// LoadYAML imports workflow definition from a YAML file.
+func LoadYAML(filePath string) (map[string]lib.Task, error) {
+    content, err := os.ReadFile(filePath)
+    if err != nil {
+        return nil, fmt.Errorf("failed to read YAML file: %w", err)
+    }
+    if len(content) == 0 {
+        return make(map[string]lib.Task), nil
+    }
+    var tasks map[string]lib.Task
+    if err := yaml.Unmarshal(content, &tasks); err != nil {
+        return nil, fmt.Errorf("invalid YAML structure in %s: %w", filePath, err)
+    }
+    return tasks, nil
+}
+
+// ExportYAML writes the workflow definition to a YAML file.
+func ExportYAML(filePath string, tasks map[string]lib.Task) error {
+    data, err := yaml.Marshal(tasks)
+    if err != nil {
+        return fmt.Errorf("failed to marshal tasks to YAML: %w", err)
+    }
+    if err := os.WriteFile(filePath, data, 0644); err != nil {
+        return fmt.Errorf("failed to write YAML file: %w", err)
+    }
+    return nil
+}
+
 // If conf is empty, it defaults to the user's home directory.
 // If the file does not exist, an empty file is created.
 func Load(confDir string) (map[string]lib.Task, error) {
@@ -135,7 +165,11 @@ func LoadLocal(confDir string) (map[string]lib.Task, error) {
 	return tasks, nil
 }
 
-func getConfigFile(confDir string) (string, error) {
+// GetConfigFilePath returns the path to the configuration file (JSON) for the given directory.
+func GetConfigFilePath(confDir string) (string, error) {
+    return getConfigFile(confDir)
+}
+
 	var configPath string
 	if confDir != "" {
 		configPath = filepath.Join(confDir, configFileName)

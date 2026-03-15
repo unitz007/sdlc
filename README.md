@@ -1,5 +1,13 @@
 # SDLC
 
+## Overview
+
+**SDLC** is a lightweight, unified CLI tool designed to simplify your software development lifecycle. It abstracts away the complexity of different build tools and languages, providing a consistent interface for running, testing, and building your projects.
+
+## Purpose
+
+The purpose of this project is to provide developers with a single entry point to manage multi-language, multi-module repositories without needing to remember the specific commands for each technology. It aims to increase productivity, reduce context switching, and make onboarding new team members easier.
+
 **SDLC** is a lightweight, unified CLI tool designed to simplify your software development lifecycle. It abstracts away the complexity of different build tools and languages, providing a consistent interface for running, testing, and building your projects.
 
 Whether you're working on a Go backend, a Node.js frontend, or a multi-module monorepo, `sdlc` figures out what to do so you don't have to remember every specific command.
@@ -143,9 +151,42 @@ Enable watch mode with `--watch` (or `-w`). SDLC will monitor all files in the p
 - **Single Module**: Restarts the process on change.
 - **Multi-Module**: Restarts all modules to ensure consistency (smart partial restarts coming soon).
 
-## Contributing
+## Roadmap
+
+- **Enhanced Watch Mode**: smarter partial restarts for individual modules.
+- **Plugin System**: allow community-contributed project definitions and commands.
+- **CI Integration**: built‑in support for common CI/CD pipelines (GitHub Actions, GitLab CI).
+- **Documentation Site**: generate a static site from the README and examples.
+- **Cross‑Platform Binaries**: pre‑compiled binaries for Windows, macOS, and Linux.
+- **Extensive Test Coverage**: increase unit and integration test coverage.
+
+
 
 Pull requests are welcome! For major changes, please open an issue first to discuss what you would like to change.
+
+## Contributing
+
+We welcome contributions from the community! To get started:
+
+1. **Fork the repository** and clone your fork locally.
+2. **Create a new branch** for your feature or bug fix.
+3. Ensure the code builds and all tests pass:
+   ```bash
+   go test ./...
+   ```
+4. Follow the existing code style and formatting (run `go fmt ./...`).
+5. Write or update tests to cover your changes.
+6. Commit your changes with clear, descriptive messages.
+7. Push the branch to your fork and open a Pull Request against the `main` branch.
+
+Please make sure your PR:
+- Includes a concise description of the change.
+- Passes all existing CI checks.
+- Does not introduce new linting or formatting issues.
+
+We appreciate your help in making **SDLC** better!
+
+## License
 
 ## License
 

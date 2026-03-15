@@ -53,7 +53,7 @@ func workflowsHandler(w http.ResponseWriter, r *http.Request) {
 // /workflows/{id} and action subpaths
 func workflowActionHandler(w http.ResponseWriter, r *http.Request) {
     // Expected path: /workflows/{id} or /workflows/{id}/action
-    path := r.URL.Path[len("/workflows/":)]
+    path := r.URL.Path[len("/workflows/"):]
     // split by '/'
     parts := splitPath(path)
     if len(parts) == 0 {

@@ -37,6 +37,45 @@ go install .
 
 Ensure your `$(go env GOPATH)/bin` is in your system `PATH`.
 
+## Docker
+
+A Docker image containing the `sdlc` CLI and all its dependencies can be built and pushed automatically via GitHub Actions.
+
+```bash
+# Build the image locally
+docker build -t yourusername/sdlc:latest .
+
+# Run the dashboard (example command)
+# Adjust environment variables as needed for persistence, plugins, and notifications.
+# Example variables:
+#   SDLC_PERSISTENCE=/data
+#   SDLC_PLUGINS=/plugins
+#   SDLC_NOTIF_HOOK=https://example.com/hook
+
+docker run --rm \
+  -e SDLC_PERSISTENCE=/data \
+  -e SDLC_PLUGINS=/plugins \
+  -e SDLC_NOTIF_HOOK=https://example.com/hook \
+  -v $(pwd)/data:/data \
+  -v $(pwd)/plugins:/plugins \
+  yourusername/sdlc:latest run
+```
+
+Replace `yourusername` with your Docker Hub (or GHCR) username. The container’s default command runs `sdlc run`, but you can override it, e.g., `docker run ... yourusername/sdlc:latest test`.
+
+## Usage
+...
+
+You can build and install `sdlc` from source using Go (1.20+):
+
+```bash
+git clone https://github.com/unitz007/sdlc.git
+cd sdlc
+go install .
+```
+
+Ensure your `$(go env GOPATH)/bin` is in your system `PATH`.
+
 ## Usage
 
 Navigate to your project directory and run:

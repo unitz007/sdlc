@@ -21,7 +21,7 @@ type Executor struct {
 // NewExecutor creates a new Executor for the given command string. The command
 // is split on spaces — the first token is used as the program name and the
 // remaining tokens as arguments.
-func NewExecutor(ctx context.Context, command string) *Executor {
+func NewExecutor(command string) *Executor {
 	program := strings.Split(command, " ")[0]
 	// Use CommandContext for cancellation support
 	cmd := exec.CommandContext(ctx, program, strings.Split(command, " ")[1:]...)

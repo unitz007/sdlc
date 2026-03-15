@@ -16,8 +16,7 @@ import (
 
 	"sdlc/config"
 	"sdlc/engine"
-	"sdlc/lib"
-	"sdlc/plugins"
+	"sdlc/metrics"
 
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
@@ -485,11 +484,19 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 		cmdStr = strings.ReplaceAll(cmdStr, fmt.Sprintf("$%s", k), v)
 	}
 
-	// Run the command
+	// Run the command with metrics tracking
+	metrics.IncActiveWorkflows()
+	start := time.Now()
 	if err := runCommand(ctx, cmdStr, p.AbsPath, out, errOut, env); err != nil {
+		metrics.ObserveExecutionTime(time.Since(start).Seconds())
+		metrics.IncFailedStages()
+		metrics.DecActiveWorkflows()
 		fmt.Fprintf(errOut, "Command failed: %v\n", err)
 		return err
 	}
+	metrics.ObserveExecutionTime(time.Since(start).Seconds())
+	metrics.IncCompletedStages()
+	metrics.DecActiveWorkflows()
 	return nil
 }
 

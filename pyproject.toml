@@ -1,0 +1,9 @@
+[tool.poetry]
+name = "sdlc"
+version = "0.1.0"
+description = "SDLC CLI tool for software development lifecycle."
+authors = ["unitz007 <you@example.com>"]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"

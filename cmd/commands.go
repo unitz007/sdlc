@@ -17,6 +17,7 @@ import (
 	"sdlc/config"
 	"sdlc/engine"
 	"sdlc/lib"
+	"sdlc/plugins"
 
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
@@ -453,8 +454,13 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 	// Construct command arguments string
 	cmdArgsStr := strings.Join(args, " ")
 
-	// Execute command
-	cmdStr, err := p.Task.Command(action)
+	// Execute command, using plugin if registered
+	var cmdStr string
+	if plugin, ok := plugins.GetPlugin(action); ok {
+		cmdStr, err = plugin.Command(p)
+	} else {
+		cmdStr, err = p.Task.Command(action)
+	}
 	if err != nil {
 		fmt.Fprintf(errOut, "Error getting command: %v\n", err)
 		return err

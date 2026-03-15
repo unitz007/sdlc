@@ -16,7 +16,7 @@ import (
 
 	"sdlc/config"
 	"sdlc/engine"
-	"sdlc/lib"
+	"sdlc/metrics"
 
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
@@ -416,7 +416,7 @@ func prepareProjectEnv(p engine.Project, rootEnvConfig *config.EnvSettings) (map
 	return finalEnv, finalArgs
 }
 
-func runProject(ctx context.Context, p engine.Project, index int, action string, env map[string]string, args []string, multi bool) error {
+func runProject(ctx context.Context, p engine.Project, index int, action string, env map[string]string, args []string, multi bool) (err error) {
 	// Clean up .vite-temp if it exists, to prevent EPERM errors on restart
 	viteTemp := filepath.Join(p.AbsPath, "node_modules", ".vite-temp")
 	if _, err := os.Stat(viteTemp); err == nil {
@@ -426,6 +426,16 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+
+	// Set status to running and ensure final status is recorded
+	SetStatus(p.Path, "running")
+	defer func() {
+		if err != nil {
+			SetStatus(p.Path, "error")
+		} else {
+			SetStatus(p.Path, "stopped")
+		}
+	}()
 
 	color := getModuleColor(index)
 	prefix := fmt.Sprintf("[%s%s%s] ", color, p.Path, colorReset)
@@ -443,8 +453,13 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 	// Construct command arguments string
 	cmdArgsStr := strings.Join(args, " ")
 
-	// Get base command
-	cmdStr, err := p.Task.Command(action)
+	// Execute command, using plugin if registered
+	var cmdStr string
+	if plugin, ok := plugins.GetPlugin(action); ok {
+		cmdStr, err = plugin.Command(p)
+	} else {
+		cmdStr, err = p.Task.Command(action)
+	}
 	if err != nil {
 		fmt.Fprintf(errOut, "Error getting command: %v\n", err)
 		return err
@@ -469,106 +484,19 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 		cmdStr = strings.ReplaceAll(cmdStr, fmt.Sprintf("$%s", k), v)
 	}
 
-	// Determine retry policy
-	maxAttempts := p.Task.RetryAttempts
-	if maxAttempts < 1 {
-		maxAttempts = 1
-	}
-	backoffSec := p.Task.RetryBackoff
-	if backoffSec < 0 {
-		backoffSec = 0
-	}
-
-	var lastErr error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		if attempt > 1 {
-			// exponential backoff: base * 2^(attempt-2)
-			waitSec := backoffSec
-			if waitSec > 0 {
-				waitSec = waitSec * (1 << (attempt - 2))
-			}
-			waitDur := time.Duration(waitSec) * time.Second
-			if waitDur > 0 {
-				fmt.Fprintf(errOut, "Retry %d/%d after %v due to error: %v\n", attempt, maxAttempts, waitDur, lastErr)
-				select {
-				case <-time.After(waitDur):
-				case <-ctx.Done():
-					return ctx.Err()
-				}
-			}
-		}
-
-		lastErr = runCommand(ctx, cmdStr, p.AbsPath, out, errOut, env)
-		if lastErr == nil {
-			return nil
-		}
-		// If context cancelled, abort immediately
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-	}
-	// All attempts failed
-	fmt.Fprintf(errOut, "Command failed after %d attempts: %v\n", maxAttempts, lastErr)
-	return lastErr
-}
-
-	// Clean up .vite-temp if it exists, to prevent EPERM errors on restart
-	viteTemp := filepath.Join(p.AbsPath, "node_modules", ".vite-temp")
-	if _, err := os.Stat(viteTemp); err == nil {
-		fmt.Printf("[SDLC] Cleaning up %s\n", viteTemp)
-		if err := os.RemoveAll(viteTemp); err != nil {
-			fmt.Printf("[SDLC] Warning: failed to clean up %s: %v\n", viteTemp, err)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	color := getModuleColor(index)
-	prefix := fmt.Sprintf("[%s%s%s] ", color, p.Path, colorReset)
-	var out, errOut io.Writer
-
-	if multi {
-		out = NewPrefixWriter(os.Stdout, prefix)
-		errOut = NewPrefixWriter(os.Stderr, prefix)
-	} else {
-		out = os.Stdout
-		errOut = os.Stderr
-		fmt.Printf("[SDLC] Executing %s for module: %s%s%s\n", action, color, p.Path, colorReset)
-	}
-
-	// Construct command arguments string
-	cmdArgsStr := strings.Join(args, " ")
-
-	// Execute command
-	cmdStr, err := p.Task.Command(action)
-	if err != nil {
-		fmt.Fprintf(errOut, "Error getting command: %v\n", err)
-		return err
-	}
-
-	if cmdArgsStr != "" {
-		cmdStr += " " + cmdArgsStr
-	}
-
-	// Substitute environment variables in the command string
-	keys := make([]string, 0, len(env))
-	for k := range env {
-		keys = append(keys, k)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		return len(keys[i]) > len(keys[j])
-	})
-
-	for _, k := range keys {
-		v := env[k]
-		cmdStr = strings.ReplaceAll(cmdStr, fmt.Sprintf("${%s}", k), v)
-		cmdStr = strings.ReplaceAll(cmdStr, fmt.Sprintf("$%s", k), v)
-	}
-
-	// Run the command
+	// Run the command with metrics tracking
+	metrics.IncActiveWorkflows()
+	start := time.Now()
 	if err := runCommand(ctx, cmdStr, p.AbsPath, out, errOut, env); err != nil {
+		metrics.ObserveExecutionTime(time.Since(start).Seconds())
+		metrics.IncFailedStages()
+		metrics.DecActiveWorkflows()
 		fmt.Fprintf(errOut, "Command failed: %v\n", err)
 		return err
 	}
+	metrics.ObserveExecutionTime(time.Since(start).Seconds())
+	metrics.IncCompletedStages()
+	metrics.DecActiveWorkflows()
 	return nil
 }
 

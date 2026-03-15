@@ -13,6 +13,10 @@ type Task struct {
 	Build   string `json:"build"`
 	Install string `json:"install"`
 	Clean   string `json:"clean"`
+	// Retry policy for transient failures
+	RetryAttempts int `json:"retryAttempts,omitempty"`
+	RetryBackoff  int `json:"retryBackoff,omitempty"` // base backoff in seconds
+ 
 }
 
 // Command returns the shell command string for the given lifecycle action.

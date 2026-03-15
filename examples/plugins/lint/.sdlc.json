@@ -1,0 +1,9 @@
+{
+  "*": {
+    "run": "golint ./...",
+    "test": "",
+    "build": "",
+    "install": "",
+    "clean": ""
+  }
+}

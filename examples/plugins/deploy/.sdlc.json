@@ -1,0 +1,9 @@
+{
+  "*.go": {
+    "run": "go run .",
+    "test": "go test ./...",
+    "build": "go build -o app",
+    "install": "go mod download",
+    "clean": "go clean"
+  }
+}

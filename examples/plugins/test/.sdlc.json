@@ -1,0 +1,9 @@
+{
+  "package.json": {
+    "run": "npm start",
+    "test": "npm test",
+    "build": "npm run build",
+    "install": "npm install",
+    "clean": "rm -rf node_modules"
+  }
+}

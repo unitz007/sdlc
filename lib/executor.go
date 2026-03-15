@@ -1,7 +1,6 @@
 package lib
 
 import (
-	"context"
 	"io"
 	"os"
 	"os/exec"
@@ -23,21 +22,12 @@ type Executor struct {
 // remaining tokens as arguments.
 func NewExecutor(command string) *Executor {
 	program := strings.Split(command, " ")[0]
-	// Use CommandContext for cancellation support
-	cmd := exec.CommandContext(ctx, program, strings.Split(command, " ")[1:]...)
+	// Use exec.Command for execution
+	cmd := exec.Command(program, strings.Split(command, " ")[1:]...)
 
 	// Create a new process group for proper signal handling
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	// Kill the entire process group on cancellation
-	cmd.Cancel = func() error {
-		// Only try to kill if process is started
-		if cmd.Process != nil {
-			// Send SIGTERM to allow graceful cleanup
-			return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-		}
-		return nil
-	}
 
 	return &Executor{
 		cmd:    cmd,

@@ -18,6 +18,27 @@ type Workflow struct {
     CreatedAt time.Time `json:"created_at"`
 }
 
+// AuditLog represents an audit trail entry.
+type AuditLog struct {
+    UserID     string    `json:"user_id"`
+    Action     string    `json:"action"`
+    WorkflowID string    `json:"workflow_id"`
+    Timestamp  time.Time `json:"timestamp"`
+    Details    string    `json:"details,omitempty"`
+}
+
+
+// auditStore holds audit logs in memory.
+var auditStore struct {
+    sync.Mutex
+    logs []AuditLog
+}
+
+    ID        string    `json:"id"`
+    Status    string    `json:"status"`
+    CreatedAt time.Time `json:"created_at"`
+}
+
 type workflowStore struct {
     sync.Mutex
     data map[string]*Workflow
@@ -82,6 +103,17 @@ func workflowActionHandler(w http.ResponseWriter, r *http.Request) {
     http.Error(w, "bad request", http.StatusBadRequest)
 }
 
+func logAudit(r *http.Request, action, workflowID, details string) {
+    user := r.Header.Get("X-User-ID")
+    if user == "" {
+        user = "anonymous"
+    }
+    entry := AuditLog{UserID: user, Action: action, WorkflowID: workflowID, Timestamp: time.Now(), Details: details}
+    auditStore.Lock()
+    auditStore.logs = append(auditStore.logs, entry)
+    auditStore.Unlock()
+}
+
 func splitPath(p string) []string {
     var res []string
     for _, seg := range strings.Split(p, "/") {
@@ -90,6 +122,8 @@ func splitPath(p string) []string {
         }
     }
     return res
+}
+
 }
 
 func createWorkflow(w http.ResponseWriter, r *http.Request) {

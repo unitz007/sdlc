@@ -8,7 +8,7 @@ import (
 )
 
 func runCommand(ctx context.Context, commandStr, dir string, stdout, stderr io.Writer, env map[string]string) error {
-	executor := lib.NewExecutor(ctx, commandStr)
+	executor := lib.NewExecutor(commandStr)
 	if dir != "" {
 		executor.SetDir(dir)
 	}

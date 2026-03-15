@@ -2,10 +2,12 @@ package lib
 
 import (
 	"context"
+	"context"
+	"testing"
 )
 
 func TestNewExecutor_SingleWord(t *testing.T) {
-	executor := NewExecutor("echo")
+	executor := NewExecutor(context.Background(), "echo")
 	if executor == nil {
 		t.Fatal("NewExecutor(\"echo\") returned nil")
 	}

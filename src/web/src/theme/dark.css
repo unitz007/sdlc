@@ -1,0 +1,7 @@
+/* Dark theme CSS variables */
+:root {
+  --background-color: #121212;
+  --text-color: #e0e0e0;
+  --component-bg: #1e1e1e;
+  --component-text: #ffffff;
+}

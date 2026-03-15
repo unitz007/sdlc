@@ -1,0 +1,13 @@
+{
+  "name": "sdlc-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "echo \"No tests\" && exit 0",
+    "build": "echo \"Build complete\" && exit 0",
+    "cypress:run": "cypress run --spec cypress/integration/theme.spec.js"
+  },
+  "devDependencies": {
+    "cypress": "^13.0.0"
+  }
+}

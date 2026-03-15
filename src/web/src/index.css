@@ -1,0 +1,20 @@
+/* Global CSS variables */
+:root {
+  --background-color: #ffffff;
+  --text-color: #000000;
+  --component-bg: #f5f5f5;
+  --component-text: #000000;
+}
+
+body {
+  background-color: var(--background-color);
+  color: var(--text-color);
+}
+
+.dark-mode {
+  /* Override with dark theme variables */
+  --background-color: #121212;
+  --text-color: #e0e0e0;
+  --component-bg: #1e1e1e;
+  --component-text: #ffffff;
+}

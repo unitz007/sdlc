@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: ["*"]
+  pull_request:
+    branches: ["*"]
+
+jobs:
+  lint-test-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # Set up Go (for building the Go project)
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Build Go binary
+        run: go build ./...
+
+      - name: Test Go project
+        run: go test ./... -v -coverprofile=coverage.out
+
+      - name: Upload Go coverage
+        uses: actions/upload-artifact@v3
+        with:
+          name: go-coverage
+          path: coverage.out
+
+      # Set up Python environment (for linting and testing)
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff pytest pytest-cov || true
+
+      - name: Lint with ruff (fallback to flake8)
+        run: |
+          if command -v ruff > /dev/null; then
+            ruff .
+          else
+            pip install flake8
+            flake8 .
+          fi
+
+      - name: Run Python tests with coverage
+        run: |
+          if [ -f "pytest.ini" ] || [ -d "tests" ]; then
+            pytest --cov=.
+          else
+            echo "No Python tests found, skipping."
+          fi

@@ -1,5 +1,7 @@
 # SDLC
 
+[![CI](https://github.com/unitz007/sdlc/actions/workflows/ci.yml/badge.svg)](https://github.com/unitz007/sdlc/actions/workflows/ci.yml)
+
 **SDLC** is a lightweight, unified CLI tool designed to simplify your software development lifecycle. It abstracts away the complexity of different build tools and languages, providing a consistent interface for running, testing, and building your projects.
 
 Whether you're working on a Go backend, a Node.js frontend, or a multi-module monorepo, `sdlc` figures out what to do so you don't have to remember every specific command.

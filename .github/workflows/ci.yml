@@ -65,7 +65,7 @@ jobs:
       - name: Run Python tests with coverage
         run: |
           if [ -f "pytest.ini" ] || [ -d "tests" ]; then
-            pytest --cov=.
+            pytest --cov=. --cov-report=xml .
           else
             echo "No Python tests found, skipping."
           fi

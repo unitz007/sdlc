@@ -4,6 +4,13 @@ version = "0.1.0"
 description = "SDLC CLI tool for software development lifecycle."
 authors = ["unitz007 <you@example.com>"]
 
+[tool.poetry.dev-dependencies]
+pytest = "*"
+pytest-asyncio = "*"
+httpx = "*"
+mypy = "*"
+ruff = "*"
+
 [build-system]
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"

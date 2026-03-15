@@ -9,14 +9,15 @@ import (
 )
 
 var (
-	cfgFile    string
-	workDir    string
-	extraArgs  string
-	targetMod  string
-	ignoreMods []string
-	runAllMods bool
-	watchMode  bool
-	dryRun     bool
+    slackWebhook string
+    cfgFile    string
+    workDir    string
+    extraArgs  string
+    targetMod  string
+    ignoreMods []string
+    runAllMods bool
+    watchMode  bool
+    dryRun     bool
 )
 
 // RootCmd represents the base command when called without any subcommands
@@ -46,6 +47,7 @@ func init() {
 	RootCmd.PersistentFlags().BoolVarP(&runAllMods, "all", "a", false, "Run command for all detected modules")
 	RootCmd.PersistentFlags().BoolVarP(&watchMode, "watch", "w", false, "Watch for file changes and restart")
 	RootCmd.PersistentFlags().BoolVarP(&dryRun, "dry-run", "n", false, "Show what would happen without executing commands (dry run)")
+	RootCmd.PersistentFlags().StringVar(&slackWebhook, "slack-webhook", "", "Slack webhook URL for notifications")
 }
 
 // resolveWorkDir handles the directory resolution logic including tilde expansion

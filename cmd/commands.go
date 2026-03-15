@@ -443,7 +443,8 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 	// Construct command arguments string
 	cmdArgsStr := strings.Join(args, " ")
 
-	// Execute command
+	// Send Slack notification for stage start
+	sendSlackNotification(fmt.Sprintf("[%s] %s stage started", p.Path, action))
 	cmdStr, err := p.Task.Command(action)
 	if err != nil {
 		fmt.Fprintf(errOut, "Error getting command: %v\n", err)
@@ -472,8 +473,12 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 	// Run the command
 	if err := runCommand(ctx, cmdStr, p.AbsPath, out, errOut, env); err != nil {
 		fmt.Fprintf(errOut, "Command failed: %v\n", err)
+		// Send Slack notification for failure
+		sendSlackNotification(fmt.Sprintf("[%s] %s failed: %v", p.Path, action, err))
 		return err
 	}
+	// Send Slack notification for successful completion
+	sendSlackNotification(fmt.Sprintf("[%s] %s completed successfully", p.Path, action))
 	return nil
 }
 

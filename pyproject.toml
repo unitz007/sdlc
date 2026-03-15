@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sdlc-py"
+version = "0.1.0"
+description = "Python utilities for the SDLC toolset"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [{name = "unitz007", email = "example@example.com"}]
+license = {text = "Apache-2.0"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+]
+# No runtime dependencies for now
+dependencies = []
+
+[project.optional-dependencies]
+# Add any optional groups if needed
+
+tool.setuptools.packages.find = {where = ["src"]}
+
+[project.scripts]
+# console script entry point
+sdlc-py = "src.main:main"

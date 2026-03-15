@@ -1,0 +1,72 @@
+{
+  "/private/tmp/kael-repos/unitz007/sdlc/go.mod": {
+    "mtime": 1773539993.5964756,
+    "hash": "deea7bd707f6337e51bbfd2fb157bd5f",
+    "indexed_at": "2026-03-15T03:02:25.955158"
+  },
+  "/private/tmp/kael-repos/unitz007/sdlc/LICENSE": {
+    "mtime": 1773539993.5956807,
+    "hash": "86d3f3a95c324c9479bd8986968f4327",
+    "indexed_at": "2026-03-15T03:02:25.955225"
+  },
+  "/private/tmp/kael-repos/unitz007/sdlc/go.sum": {
+    "mtime": 1773539993.5965283,
+    "hash": "24ec0d362e88e585102fe0c856a2d9b0",
+    "indexed_at": "2026-03-15T03:02:25.955373"
+  },
+  "/private/tmp/kael-repos/unitz007/sdlc/README.md": {
+    "mtime": 1773540115.1860354,
+    "hash": "27b9a370b741bf4fa4f747fb28b11851",
+    "indexed_at": "2026-03-15T03:02:25.955847"
+  },
+  "/private/tmp/kael-repos/unitz007/sdlc/main.go": {
+    "mtime": 1773539993.596868,
+    "hash": "8594d92e759442a525476dc433ba1f11",
+    "indexed_at": "2026-03-15T03:02:25.955882"
+  },
+  "/private/tmp/kael-repos/unitz007/sdlc/cmd/executor.go": {
+    "mtime": 1773539993.5961463,
+    "hash": "935ab9c84083ba18cbe383858e9a3577",
+    "indexed_at": "2026-03-15T03:02:25.955916"
+  },
+  "/private/tmp/kael-repos/unitz007/sdlc/cmd/commands.go": {
+    "mtime": 1773539993.5960715,
+    "hash": "b30417301d1e4997cdf7015fb7418e7c",
+    "indexed_at": "2026-03-15T03:02:25.955983"
+  },
+  "/private/tmp/kael-repos/unitz007/sdlc/cmd/root.go": {
+    "mtime": 1773539993.5962133,
+    "hash": "63e5681d21c78e2f37c89b7829683f63",
+    "indexed_at": "2026-03-15T03:02:25.956019"
+  },
+  "/private/tmp/kael-repos/unitz007/sdlc/config/config.go": {
+    "mtime": 1773539993.5963132,
+    "hash": "bbe74366e2f55f18807fbdd66b490578",
+    "indexed_at": "2026-03-15T03:02:25.956058"
+  },
+  "/private/tmp/kael-repos/unitz007/sdlc/lib/executor_test.go": {
+    "mtime": 1773539993.5966923,
+    "hash": "d2109abb8eb8bd869c8a3d9a54eb6b16",
+    "indexed_at": "2026-03-15T03:02:25.956091"
+  },
+  "/private/tmp/kael-repos/unitz007/sdlc/lib/task.go": {
+    "mtime": 1773539993.5967555,
+    "hash": "a575d8b10274a2d427be93e58deba4d8",
+    "indexed_at": "2026-03-15T03:02:25.956124"
+  },
+  "/private/tmp/kael-repos/unitz007/sdlc/lib/task_test.go": {
+    "mtime": 1773539993.5968146,
+    "hash": "8ffc52e354226aaa1544ba3edcd931ac",
+    "indexed_at": "2026-03-15T03:02:25.956159"
+  },
+  "/private/tmp/kael-repos/unitz007/sdlc/lib/executor.go": {
+    "mtime": 1773539993.5966318,
+    "hash": "49ef97e8a6f942508758b01a7996e5be",
+    "indexed_at": "2026-03-15T03:02:25.956193"
+  },
+  "/private/tmp/kael-repos/unitz007/sdlc/engine/engine.go": {
+    "mtime": 1773539993.5964108,
+    "hash": "b7d6194c93de34b07fb76994456d950d",
+    "indexed_at": "2026-03-15T03:02:25.956229"
+  }
+}

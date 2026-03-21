@@ -25,6 +25,7 @@ var (
 	verbose          bool
 	noColor          bool
 	parallelFlag     parallelValue
+	showVersion      bool
 )
 
 // parallelValue is a custom pflag.Value that allows --parallel to be used
@@ -53,6 +54,11 @@ var RootCmd = &cobra.Command{
 for common software development lifecycle commands — run, test, and build — 
 across different project types.`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if showVersion {
+			fmt.Printf("sdlc version %s\n", Version)
+			os.Exit(0)
+		}
+
 		lib.InitColor(noColor)
 
 		resolved, err := resolveConfigDir(cfgFile)
@@ -64,13 +70,6 @@ across different project types.`,
 
 		return nil
 	},
-}
-
-// Wire up cobra's built-in --version flag support.
-// Version can be overridden at build time via -ldflags "-X sdlc/cmd.Version=1.0.0".
-func init() {
-	RootCmd.Version = Version
-	RootCmd.SetVersionTemplate("sdlc version {{.Version}}\n")
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
@@ -100,10 +99,10 @@ func init() {
 	RootCmd.PersistentFlags().BoolVarP(&watchMode, "watch", "w", false, "Watch for file changes and restart")
 	RootCmd.PersistentFlags().StringVar(&debounceDuration, "debounce", "500ms", "Debounce window for watch mode (e.g. 500ms, 1s)")
 	RootCmd.PersistentFlags().BoolVarP(&dryRun, "dry-run", "n", false, "Show what would happen without executing commands (dry run)")
-	RootCmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "Show resolved commands and environment variables before execution")
+	RootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Show resolved commands and environment variables before execution")
 	RootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 	RootCmd.PersistentFlags().VarP(&parallelFlag, "parallel", "p", "Run modules concurrently (e.g., -p, -p 4)")
-	RootCmd.Flags().BoolVarP(new(bool), "version", "v", false, "Print the version")
+	RootCmd.Flags().BoolVarP(&showVersion, "version", "V", false, "Print the version")
 }
 
 // resolveWorkDir handles the directory resolution logic including tilde expansion

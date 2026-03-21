@@ -173,6 +173,33 @@ func LoadLocal(confDir string) (map[string]lib.Task, error) {
 	return tasks, nil
 }
 
+// LoadFromDir reads the .sdlc.json configuration file from the given directory.
+// It returns nil, nil if the file does not exist, without creating it.
+// This is similar to LoadLocal but is used for the --config flag where absence
+// should trigger fallback rather than file creation.
+func LoadFromDir(confDir string) (map[string]lib.Task, error) {
+	configPath := filepath.Join(confDir, configFileName)
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		return nil, nil
+	}
+
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	if len(content) == 0 {
+		return make(map[string]lib.Task), nil
+	}
+
+	var tasks map[string]lib.Task
+	if err := json.Unmarshal(content, &tasks); err != nil {
+		return nil, fmt.Errorf("invalid configuration structure in %s: %w", configPath, err)
+	}
+
+	return tasks, nil
+}
+
 func getConfigFile(confDir string) (string, error) {
 	var configPath string
 	if confDir != "" {

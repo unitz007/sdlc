@@ -1,2 +1,4 @@
 sdlc
 sdlc_test
+sdlc_test_binary
+*.test_binary

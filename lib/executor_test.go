@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -100,6 +101,9 @@ func TestExecute_ExitCode_DefaultOnStartError(t *testing.T) {
 }
 
 func TestExecute_ExitCode_SignalDeath(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skipf("skipping signal death test on %s", runtime.GOOS)
+	}
 	// Create a temp script that kills itself with SIGKILL
 	script := filepath.Join(t.TempDir(), "killself.sh")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nkill -9 $$\n"), 0755); err != nil {
@@ -111,10 +115,10 @@ func TestExecute_ExitCode_SignalDeath(t *testing.T) {
 		t.Fatal("Execute() expected error for signal-killed process, got nil")
 	}
 	code := executor.ExitCode()
-	if code == 0 {
-		t.Errorf("ExitCode() = %d, want non-zero for signal-killed process", code)
+	// On Unix, a process killed by signal 9 (SIGKILL) reports -9 via WaitStatus
+	// (negative on macOS, also negative on Linux).
+	if code >= 0 {
+		t.Errorf("ExitCode() = %d, want negative (signal convention) for signal-killed process", code)
 	}
-	// On Unix, a process killed by signal 9 (SIGKILL) should report -9 via WaitStatus
-	// or 137 (128 + 9) depending on the platform. We just verify it's non-zero.
 	t.Logf("Signal death exit code: %d", code)
 }

@@ -13,7 +13,7 @@ import (
 var (
 	cfgFile    string
 	workDir    string
-	extraArgs  string
+	extraArgs  []string
 	targetMod  string
 	ignoreMods []string
 	runAllMods bool
@@ -46,7 +46,7 @@ func Execute() {
 
 func init() {
 	RootCmd.PersistentFlags().StringVarP(&workDir, "dir", "d", "", "Absolute path to project directory")
-	RootCmd.PersistentFlags().StringVarP(&extraArgs, "extra-args", "e", "", "Extra arguments to pass to the build tool")
+	RootCmd.PersistentFlags().StringSliceVarP(&extraArgs, "extra-args", "e", []string{}, "Extra arguments to pass to the build tool (repeatable, or space-separated within a single value)")
 	RootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "Path to directory for configuration file")
 	RootCmd.PersistentFlags().StringVarP(&targetMod, "module", "m", "", "Specific module/path to run (relative path)")
 	RootCmd.PersistentFlags().StringSliceVarP(&ignoreMods, "ignore", "i", []string{}, "Ignore specific modules (by path or name)")

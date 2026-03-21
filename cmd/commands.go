@@ -47,6 +47,7 @@ func init() {
 	RootCmd.AddCommand(installCmd)
 	RootCmd.AddCommand(cleanCmd)
 	RootCmd.AddCommand(initCmd)
+	RootCmd.AddCommand(listCmd)
 }
 
 var runCmd = &cobra.Command{

@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -75,5 +76,10 @@ func resolveWorkDir(dirFlag string) (string, error) {
 		}
 		wd = strings.ReplaceAll(wd, "~", homeDir)
 	}
+
+	if dirFlag != "" && !filepath.IsAbs(wd) {
+		return "", fmt.Errorf("--dir requires an absolute path, got %q", dirFlag)
+	}
+
 	return wd, nil
 }

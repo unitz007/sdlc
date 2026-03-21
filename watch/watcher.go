@@ -36,6 +36,7 @@ type Watcher struct {
 	changes   chan string
 	done      chan struct{}
 	mu        sync.Mutex
+	wg        sync.WaitGroup // tracks in-flight AfterFunc callbacks
 	pending   map[string]struct{}
 }
 
@@ -72,7 +73,11 @@ func (w *Watcher) eventLoop() {
 		select {
 		case <-w.done:
 			if timer != nil {
-				timer.Stop()
+				// If Stop returns true the callback won't fire, so
+				// compensate the WaitGroup counter we already added.
+				if timer.Stop() {
+					w.wg.Done()
+				}
 			}
 			return
 		case event, ok := <-w.fsWatcher.Events:
@@ -85,12 +90,18 @@ func (w *Watcher) eventLoop() {
 			w.mu.Lock()
 			w.pending[event.Name] = struct{}{}
 			if timer != nil {
-				timer.Stop()
+				// If Stop returns true the old callback won't fire,
+				// so compensate the WaitGroup counter we added for it.
+				if timer.Stop() {
+					w.wg.Done()
+				}
 			}
 			deb := w.debounce
+			w.wg.Add(1)
 			w.mu.Unlock()
 
 			timer = time.AfterFunc(deb, func() {
+				defer w.wg.Done()
 				w.mu.Lock()
 				defer w.mu.Unlock()
 				if len(w.pending) == 0 {
@@ -173,6 +184,9 @@ func (w *Watcher) Changes() <-chan string {
 func (w *Watcher) Close() error {
 	close(w.done)
 	err := w.fsWatcher.Close()
+	// Wait for any in-flight AfterFunc callbacks to finish so they don't
+	// attempt to send on the (soon-to-be-closed) changes channel.
+	w.wg.Wait()
 	close(w.changes)
 	return err
 }

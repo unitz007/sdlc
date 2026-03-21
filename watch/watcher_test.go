@@ -89,7 +89,7 @@ func TestWatcherDebounce(t *testing.T) {
 	}
 }
 
-func TestWatcherIgnorePatterns(t *testing.T) {
+func TestWatcherExcludedDirs(t *testing.T) {
 	tmpDir := t.TempDir()
 	nmDir := filepath.Join(tmpDir, "node_modules")
 	if err := os.MkdirAll(nmDir, 0755); err != nil {
@@ -106,7 +106,7 @@ func TestWatcherIgnorePatterns(t *testing.T) {
 		t.Fatalf("AddDir() returned error: %v", err)
 	}
 
-	// Write a file inside node_modules — should be ignored.
+	// Write a file inside node_modules — should be ignored by excludedDirs.
 	testFile := filepath.Join(nmDir, "pkg", "index.js")
 	if err := os.MkdirAll(filepath.Dir(testFile), 0755); err != nil {
 		t.Fatalf("failed to create nested dir: %v", err)
@@ -119,6 +119,41 @@ func TestWatcherIgnorePatterns(t *testing.T) {
 	select {
 	case changed := <-w.Changes():
 		t.Fatalf("received unexpected change for ignored path: %s", changed)
+	case <-time.After(500 * time.Millisecond):
+		// Good — no event for ignored directory.
+	}
+}
+
+func TestWatcherIgnorePatterns(t *testing.T) {
+	tmpDir := t.TempDir()
+	ignoreDir := filepath.Join(tmpDir, "myignore")
+	if err := os.MkdirAll(ignoreDir, 0755); err != nil {
+		t.Fatalf("failed to create myignore directory: %v", err)
+	}
+
+	w, err := New(Config{
+		Debounce:       100 * time.Millisecond,
+		IgnorePatterns: []string{"myignore"},
+	})
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
+	defer w.Close()
+
+	if err := w.AddDir(tmpDir); err != nil {
+		t.Fatalf("AddDir() returned error: %v", err)
+	}
+
+	// Write a file inside myignore — should be filtered by IgnorePatterns.
+	testFile := filepath.Join(ignoreDir, "data.txt")
+	if err := os.WriteFile(testFile, []byte("ignored"), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	// Assert no change was received within 500ms.
+	select {
+	case changed := <-w.Changes():
+		t.Fatalf("received unexpected change for ignore-pattern path: %s", changed)
 	case <-time.After(500 * time.Millisecond):
 		// Good — no event for ignored directory.
 	}

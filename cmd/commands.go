@@ -505,6 +505,34 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 		cmdStr = strings.ReplaceAll(cmdStr, fmt.Sprintf("$%s", k), v)
 	}
 
+	if verbose {
+		var target io.Writer
+		if multi {
+			target = errOut
+		} else {
+			target = os.Stderr
+		}
+		if len(env) > 0 {
+			envKeys := make([]string, 0, len(env))
+			for k := range env {
+				envKeys = append(envKeys, k)
+			}
+			sort.Strings(envKeys)
+			for _, k := range envKeys {
+				if multi {
+					fmt.Fprintf(target, "ENV: %s=%s\n", k, env[k])
+				} else {
+					fmt.Fprintf(target, "%sENV: %s=%s\n", prefix, k, env[k])
+				}
+			}
+		}
+		if multi {
+			fmt.Fprintf(target, "$ %s\n", cmdStr)
+		} else {
+			fmt.Fprintf(target, "%s$ %s\n", prefix, cmdStr)
+		}
+	}
+
 	// Run the command
 	if err := runCommand(ctx, cmdStr, p.AbsPath, out, errOut, env); err != nil {
 		fmt.Fprintf(errOut, "Command failed: %v\n", err)

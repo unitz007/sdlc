@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -26,6 +27,8 @@ type Watcher struct {
 	debounceInterval time.Duration
 	projectRoots     map[string]string // maps any watched directory path back to its owning project's AbsPath
 	done             chan struct{}
+	loopDone         chan struct{} // closed when eventLoop goroutine exits
+	mu               sync.Mutex   // protects debouncers map
 }
 
 // NewWatcher creates a Watcher that recursively monitors all directories within
@@ -51,6 +54,7 @@ func NewWatcher(projects []engine.Project, debounceInterval time.Duration) (*Wat
 		debounceInterval: debounceInterval,
 		projectRoots:     projectRoots,
 		done:             make(chan struct{}),
+		loopDone:         make(chan struct{}),
 	}
 
 	go w.eventLoop()
@@ -111,6 +115,7 @@ func shouldIgnoreFile(name string) bool {
 
 // eventLoop reads from the fsnotify watcher and emits debounced FileChangeEvents.
 func (w *Watcher) eventLoop() {
+	defer close(w.loopDone)
 	for {
 		select {
 		case <-w.done:
@@ -167,6 +172,7 @@ func (w *Watcher) eventLoop() {
 			}
 
 			// Reset the per-project debounce timer
+			w.mu.Lock()
 			if existing, ok := w.debouncers[projectPath]; ok {
 				existing.Stop()
 			}
@@ -176,6 +182,7 @@ func (w *Watcher) eventLoop() {
 					FilePath:    e.Name,
 				}
 			})
+			w.mu.Unlock()
 		}
 	}
 }
@@ -203,12 +210,20 @@ func (w *Watcher) Events() <-chan FileChangeEvent {
 }
 
 // Close stops the watcher, cancels all pending debounce timers, and closes
-// the events channel.
+// the events channel. It waits for the eventLoop goroutine to exit before
+// closing the events channel, preventing a race where a debounce timer fires
+// and sends on an already-closed channel.
 func (w *Watcher) Close() {
+	// Signal eventLoop to stop
 	close(w.done)
+	// Wait for eventLoop to fully exit (it can no longer create new timers)
+	<-w.loopDone
+	// Now safe to stop any remaining timers and close the events channel
 	w.fsWatcher.Close()
+	w.mu.Lock()
 	for _, t := range w.debouncers {
 		t.Stop()
 	}
+	w.mu.Unlock()
 	close(w.events)
 }

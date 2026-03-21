@@ -28,7 +28,7 @@ and always exits with code 0.`,
 		wd, err := resolveWorkDir(workDir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: directory error: %v\n", err)
-			fmt.Printf("No modules detected in %s\n", workDir)
+			fmt.Printf("No modules detected in %s\n", wd)
 			return nil
 		}
 

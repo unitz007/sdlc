@@ -105,10 +105,11 @@ func executeTask(cmd *cobra.Command, action string) error {
 }
 
 // parseParallelFlag converts the --parallel string flag to a concurrency limit.
-// Returns: 0 = unbounded concurrency, N = max N goroutines, -1 = sequential (default).
+// Returns: 0 = unbounded concurrency (default, preserves original behavior),
+// N = max N goroutines, -1 = sequential (--parallel=1).
 func parseParallelFlag(raw string) int {
 	if raw == "" {
-		return -1 // sequential by default
+		return 0 // no flag specified: unbounded concurrency (original behavior)
 	}
 	// When used as a boolean flag (--parallel with no value), cobra sets it to "true"
 	if strings.EqualFold(raw, "true") {
@@ -116,7 +117,8 @@ func parseParallelFlag(raw string) int {
 	}
 	n, err := strconv.Atoi(raw)
 	if err != nil || n < 0 {
-		return -1 // invalid value, fall back to sequential
+		fmt.Fprintf(os.Stderr, "Warning: invalid --parallel value %q, falling back to unbounded concurrency\n", raw)
+		return 0 // invalid value, fall back to unbounded concurrency
 	}
 	return n
 }
@@ -256,65 +258,42 @@ func runTask(ctx context.Context, wd, action string) error {
 	// Execute for each selected project
 	summaryResults := make([]ModuleResult, len(selectedProjects))
 
-	if parallelLimit == -1 {
-		// Sequential execution (default when --parallel is not set)
-		for i, project := range selectedProjects {
-			originalIdx := i
-			for idx, p := range projects {
-				if p.Path == project.Path {
-					originalIdx = idx
-					break
-				}
-			}
+	// Concurrent execution with optional concurrency limit (default: unbounded)
+	var wg sync.WaitGroup
+	var sem chan struct{}
+	if parallelLimit > 0 {
+		sem = make(chan struct{}, parallelLimit)
+	}
 
-			env, args := prepareProjectEnv(project, rootEnvConfig)
-			cmdStr, _ := resolveCommandString(project, action, env, args)
-			err := runProject(ctx, project, originalIdx, action, env, args, multi)
-			summaryResults[i] = ModuleResult{
-				Path:       project.Path,
+	for i, project := range selectedProjects {
+		originalIdx := i
+		for idx, p := range projects {
+			if p.Path == project.Path {
+				originalIdx = idx
+				break
+			}
+		}
+
+		wg.Add(1)
+		go func(p engine.Project, index int, slot int) {
+			defer wg.Done()
+			if sem != nil {
+				sem <- struct{}{}
+				defer func() { <-sem }()
+			}
+			env, args := prepareProjectEnv(p, rootEnvConfig)
+			cmdStr, _ := resolveCommandString(p, action, env, args)
+			err := runProject(ctx, p, index, action, env, args, multi)
+			summaryResults[slot] = ModuleResult{
+				Path:       p.Path,
 				Command:    cmdStr,
 				Err:        err,
-				ColorIndex: originalIdx,
+				ColorIndex: index,
 			}
-		}
-	} else {
-		// Parallel execution with optional concurrency limit
-		var wg sync.WaitGroup
-		var sem chan struct{}
-		if parallelLimit > 0 {
-			sem = make(chan struct{}, parallelLimit)
-		}
-
-		for i, project := range selectedProjects {
-			originalIdx := i
-			for idx, p := range projects {
-				if p.Path == project.Path {
-					originalIdx = idx
-					break
-				}
-			}
-
-			wg.Add(1)
-			go func(p engine.Project, index int, slot int) {
-				defer wg.Done()
-				if sem != nil {
-					sem <- struct{}{}
-					defer func() { <-sem }()
-				}
-				env, args := prepareProjectEnv(p, rootEnvConfig)
-				cmdStr, _ := resolveCommandString(p, action, env, args)
-				err := runProject(ctx, p, index, action, env, args, multi)
-				summaryResults[slot] = ModuleResult{
-					Path:       p.Path,
-					Command:    cmdStr,
-					Err:        err,
-					ColorIndex: index,
-				}
-			}(project, originalIdx, i)
-		}
-
-		wg.Wait()
+		}(project, originalIdx, i)
 	}
+
+	wg.Wait()
 
 	// Print summary table when two or more modules were executed
 	if len(summaryResults) >= 2 {

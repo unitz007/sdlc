@@ -39,7 +39,7 @@ func (p *parallelValue) Set(s string) error {
 	p.raw = s
 	return nil
 }
-func (p *parallelValue) Type() string { return "parallel" }
+func (p *parallelValue) Type() string { return "int" }
 
 // RootCmd represents the base command when called without any subcommands
 var RootCmd = &cobra.Command{

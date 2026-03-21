@@ -2,142 +2,146 @@
 
 ## High-Level Architecture
 
-SDLC is a lightweight, single-binary Go CLI tool that provides a unified interface for running, testing, building, installing, and cleaning software projects across different languages and build systems. It follows a classic layered architecture with four packages, each with a clear responsibility boundary.
+`sdlc` is a lightweight, single-binary Go CLI tool that provides a **unified interface** for software development lifecycle commands (`run`, `test`, `build`, `install`, `clean`) across heterogeneous project types. It auto-detects project types by scanning for well-known build files (`go.mod`, `package.json`, `pom.xml`, `Package.swift`, etc.) and executes the appropriate underlying toolchain command.
+
+The architecture follows a clean layered pattern with four packages:
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                      CLI Layer (cmd/)                    │
-│  root.go  ·  commands.go  ·  executor.go                │
-│  Cobra commands, flag parsing, orchestration, watch loop │
-├─────────────────────────────────────────────────────────┤
-│                   Engine Layer (engine/)                 │
-│  engine.go                                               │
-│  Project detection, directory scanning, module merging   │
-├─────────────────────────────────────────────────────────┤
-│                  Config Layer (config/)                  │
-│  config.go                                               │
-│  .sdlc.json loading, .sdlc.conf parsing, env/flag merge │
-├─────────────────────────────────────────────────────────┤
-│                    Lib Layer (lib/)                      │
-│  task.go  ·  executor.go                                 │
-│  Task domain type, OS process spawning, signal handling  │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│                    main.go                          │
+│                  (entry point)                       │
+└──────────────────────┬──────────────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────────────┐
+│              cmd/  (CLI & Orchestration)             │
+│  root.go ─ commands.go ─ executor.go                │
+│  [cobra commands, flags, watch loop,                │
+│   interactive selection, output prefixing]           │
+└──────┬───────────────┬──────────────┬───────────────┘
+       │               │              │
+┌──────▼──────┐ ┌──────▼──────┐ ┌────▼───────────────┐
+│  engine/    │ │  config/    │ │  lib/               │
+│  engine.go  │ │  config.go  │ │  task.go            │
+│  [project   │ │  [.sdlc.json│ │  executor.go        │
+│   detection]│ │   & .sdlc   │ │  [Task type &       │
+│             │ │   .conf     │ │   process spawning] │
+│             │ │   loading]  │ │                     │
+└─────────────┘ └─────────────┘ └─────────────────────┘
 ```
 
-**Entry point:** `main.go` → `cmd.Execute()` → Cobra root command dispatch.
+**Stack**: Go 1.20+, [spf13/cobra](https://github.com/spf13/cobra) (CLI framework), [manifoldco/promptui](https://github.com/manifoldco/promptui) (interactive prompts), standard library `os/exec` (process execution).
 
-**Key dependencies:**
-- `github.com/spf13/cobra` — CLI framework
-- `github.com/manifoldco/promptui` — Interactive module selection prompts
-- Go standard library (`os/exec`, `syscall`, `os/signal`, `filepath`)
+---
 
 ## Component Responsibilities
 
 ### `main.go`
-Minimal entry point. Delegates entirely to `cmd.Execute()`.
+Minimal entry point — calls `cmd.Execute()` and nothing else.
 
 ### `cmd/` — CLI & Orchestration Layer
-The heaviest package; owns the full request lifecycle.
 
 | File | Responsibility |
 |------|---------------|
-| `root.go` | Defines the `sdlc` root Cobra command and all persistent flags (`--dir`, `--watch`, `--module`, `--ignore`, `--all`, `--extra-args`, `--config`, `--dry-run`). Contains `resolveWorkDir()` for tilde expansion and CWD resolution. |
-| `commands.go` | Registers five subcommands (`run`, `test`, `build`, `install`, `clean`), each delegating to `executeTask()`. Contains the core orchestration logic: config loading → project detection → filtering → interactive selection → execution (single-shot or watch mode). Also implements `PrefixWriter` for color-coded multi-module output, `hasChanges()` for file-watching polling, and `promptModuleSelection()` for interactive multi-select. |
-| `executor.go` | Thin adapter that bridges `cmd` to `lib.Executor`. Constructs an executor, applies directory/output/env settings, and calls `Execute()`. |
+| `root.go` | Defines the root `sdlc` cobra command and all **global flags** (`--dir`, `--watch`, `--module`, `--ignore`, `--all`, `--extra-args`, `--config`, `--dry-run`). Contains `resolveWorkDir()` for tilde expansion and CWD resolution. |
+| `commands.go` | Registers five subcommands (`run`, `test`, `build`, `install`, `clean`), each delegating to `executeTask()`. Houses the **core orchestration logic**: config loading, project detection, filtering, interactive module selection, dry-run simulation, concurrent execution via goroutines, and the **watch-and-restart loop** (`watchAndRunLoop`). Also contains `PrefixWriter` for color-coded multi-module output and `hasChanges()` for file-watching via polling. |
+| `executor.go` | Thin bridge that creates a `lib.Executor`, applies directory/output/env settings, and calls `Execute()`. |
 
 ### `engine/` — Project Detection Engine
-Single file `engine.go` with one exported function:
 
-- **`DetectProjects(workDir, tasks) → []Project`**: Scans the working directory and its **immediate** subdirectories for known build files (keys in the `tasks` map). Merges local `.sdlc.json` overrides with global task definitions. Deduplicates by real directory path (resolving symlinks). Enforces one project per directory.
-
-The `Project` struct ties together a detected build file name, relative/absolute paths, and the associated `lib.Task`.
-
-### `config/` — Configuration Layer
-Single file `config.go` handling two config formats:
-
-- **`.sdlc.json`** (JSON): Maps build-file names (e.g. `"go.mod"`) to `lib.Task` definitions. Loaded via `Load()` (global/home, auto-creates if missing) or `LoadLocal()` (project/module-scoped, returns nil if absent).
-- **`.sdlc.conf`** (key=value / flags): Per-directory environment variables (`$KEY=VALUE`) and CLI flags (`--flag`). Loaded via `LoadEnvConfig()`.
-
-Config resolution order (per `runTask` in `commands.go`):
-1. Explicit `--config` directory
-2. Local `.sdlc.json` in working directory
-3. Global `~/.sdlc.json` (fallback)
-
-### `lib/` — Core Domain & Execution
 | File | Responsibility |
 |------|---------------|
-| `task.go` | Defines the `Task` struct (Run, Test, Build, Install, Clean command strings) with a `Command(field)` accessor method. Pure domain type with no I/O. |
-| `executor.go` | Wraps `os/exec.Cmd` with process-group signal handling (`Setpgid: true`, SIGTERM to process group on context cancellation). Provides builder-pattern methods: `SetDir()`, `SetEnv()`, `SetOutput()`, `Execute()`. |
+| `engine.go` | `DetectProjects(workDir, tasks)` recursively walks the directory tree using `filepath.WalkDir`, matching files against the configured task map. Enforces **one project per directory**, skips well-known directories (`.git`, `node_modules`, `vendor`, `dist`, etc.), resolves symlinks, and merges per-directory local `.sdlc.json` overrides with global config. Returns `[]Project` sorted by path for deterministic ordering. |
+
+### `config/` — Configuration Management
+
+| File | Responsibility |
+|------|---------------|
+| `config.go` | Two config file types: **`.sdlc.json`** (JSON task definitions mapping build-file names → `lib.Task`) and **`.sdlc.conf`** (KEY=VALUE env vars and `--flag=value` extra args). Implements a three-tier config cascade: CLI `--config` flag → local `.sdlc.json` → global `~/.sdlc.json`. `MergeEnvSettings()` performs hierarchical env/arg merging (root → module override). |
+
+### `lib/` — Core Types & Process Execution
+
+| File | Responsibility |
+|------|---------------|
+| `task.go` | `Task` struct with five string fields (`Run`, `Test`, `Build`, `Install`, `Clean`) and a `Command(field)` method that maps action names to command strings. JSON-tagged for deserialization from `.sdlc.json`. |
+| `executor.go` | `Executor` wraps `os/exec.Cmd` with process-group signal handling (`Setpgid: true`, SIGTERM on cancel via `cmd.Cancel`). Provides builder-pattern setters (`SetDir`, `SetEnv`, `SetOutput`) and `Execute()` which starts and waits for the subprocess. |
+
+---
 
 ## Data Flow
 
-### Normal Execution (e.g. `sdlc run --watch`)
+### Primary Execution Flow (e.g., `sdlc run`)
 
 ```
-User
- │
- ▼
-┌──────────────┐
-│  Cobra CLI   │  Parse flags, resolve --dir
-│  root.go     │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│ executeTask  │  Create signal-aware context (SIGINT/SIGTERM)
-│ commands.go  │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│  runTask     │  1. Load config (local → global fallback)
-│ commands.go  │  2. Detect projects via engine.DetectProjects()
-│              │  3. Load root .sdlc.conf
-│              │  4. Filter projects (--module, --ignore, --all)
-│              │  5. Interactive prompt if ambiguous
-│              │  6. Dry-run or execute
-└──────┬───────┘
-       │
-       ├── [single-shot] ──► goroutine per project ──► runProject()
-       │                                              │
-       │                                              ▼
-       │                                         prepareProjectEnv()
-       │                                         (merge root + module .sdlc.conf + CLI args)
-       │                                              │
-       │                                              ▼
-       │                                         runCommand() ──► lib.Executor.Execute()
-       │
-       └── [watch mode] ──► watchAndRunLoop()
-                              │
-                              ├── Start all projects (goroutines)
-                              ├── Poll every 500ms via hasChanges()
-                              │   (filepath.Walk, skip .git/node_modules/etc.)
-                              └── On change: cancel old context → restart module
+User runs: sdlc run --watch --ignore frontend
+         │
+         ▼
+    ┌────────────┐
+    │ cobra parses│  flags bound to package-level vars
+    │  CLI args  │  (workDir, watchMode, ignoreMods, etc.)
+    └─────┬──────┘
+          │
+          ▼
+    ┌──────────────────┐
+    │ executeTask()    │
+    │  1. resolveWorkDir()
+    │  2. signal.NotifyContext (SIGINT/SIGTERM)
+    └─────┬────────────┘
+          │
+          ▼
+    ┌──────────────────┐
+    │ runTask()        │
+    │  1. Load config  │──── config.LoadLocal(wd) → fallback config.Load("")
+    │     (.sdlc.json) │     Returns map[string]lib.Task
+    │  2. Detect       │──── engine.DetectProjects(wd, tasks)
+    │     projects     │     Returns []engine.Project
+    │  3. Load env     │──── config.LoadEnvConfig(wd) → .sdlc.conf
+    │  4. Filter       │──── filterProjects() applies --module, --ignore, --all
+    │  5. Interactive? │──── promptModuleSelection() if ambiguous
+    └─────┬────────────┘
+          │
+     ┌────┴────┐
+     │ watch?  │
+     ├─YES─────┤──NO
+     │         │
+     ▼         ▼
+ watchAndRun  Concurrent goroutines
+   Loop:      per project:
+  ┌──────┐    ┌──────────────────────┐
+  │poll  │    │ prepareProjectEnv()  │
+  │500ms │    │  merge root+module   │
+  │ticker│    │  .sdlc.conf + CLI    │
+  └──┬───┘    └──────────┬───────────┘
+     │                   │
+     │ change?           ▼
+     │           ┌──────────────────┐
+     └──restart──│  runProject()    │
+                │  1. Task.Command()│
+                │  2. Env var       │
+                │     substitution  │
+                │  3. runCommand()  │── lib.NewExecutor()
+                │     → Execute()   │── os/exec.Cmd
+                └──────────────────┘
 ```
 
-### Config Merging Flow
+### Configuration Cascade
 
 ```
-~/.sdlc.json (global defaults)
-        │
-        ▼
-local .sdlc.json (project overrides, merged on top)
-        │
-        ▼
-engine.DetectProjects() → []Project (each with merged Task)
-        │
-        ▼
-root .sdlc.conf (env vars + flags)
-        │
-        ▼
-module .sdlc.conf (overrides root env/flags)
-        │
-        ▼
-CLI --extra-args (appended last)
-        │
-        ▼
-Final command string with $VAR substitution
+Priority (highest → lowest):
+
+1. CLI flags (--config, --extra-args, --module, --ignore)
+2. Local .sdlc.json  (project root, per-directory overrides during detection)
+3. Global ~/.sdlc.json (user home, auto-created if missing)
+4. Built-in defaults  (none — config is required)
+
+Environment/Args merge:
+  root .sdlc.conf  ──┐
+                     ├── MergeEnvSettings() ──► final env + args
+  module .sdlc.conf ─┘   (module overrides root env, appends args)
+                     ──┐
+  CLI --extra-args   ───┘── appended last
 ```
+
+---
 
 ## API Surface & Contracts
 
@@ -147,26 +151,26 @@ Final command string with $VAR substitution
 |---------|-----------|-------------|
 | `sdlc run` | `"run"` | Run the application |
 | `sdlc test` | `"test"` | Run tests |
-| `sdlc build` | `"build"` | Build the project |
+| `sdlc build` | `"build"` | Compile/build |
 | `sdlc install` | `"install"` | Install dependencies |
-| `sdlc clean` | `"clean"` | Clean build artifacts |
+| `sdlc clean` | `"clean"` | Remove build artifacts |
 
 ### Global Flags
 
 | Flag | Short | Type | Default | Purpose |
 |------|-------|------|---------|---------|
 | `--dir` | `-d` | string | `""` (CWD) | Project directory |
-| `--watch` | `-w` | bool | `false` | Enable file-watch restart loop |
-| `--all` | `-a` | bool | `false` | Run all detected modules |
-| `--module` | `-m` | string | `""` | Target specific module by path |
-| `--ignore` | `-i` | []string | `[]` | Exclude modules by path or name |
-| `--extra-args` | `-e` | string | `""` | Append arguments to underlying command |
-| `--config` | `-c` | string | `""` | Custom config directory path |
-| `--dry-run` | `-n` | bool | `false` | Print commands without executing |
+| `--watch` | `-w` | bool | `false` | Enable file-watch restart |
+| `--all` | `-a` | bool | `false` | Run all modules explicitly |
+| `--module` | `-m` | string | `""` | Target specific module |
+| `--ignore` | `-i` | []string | `[]` | Exclude modules |
+| `--extra-args` | `-e` | string | `""` | Append args to commands |
+| `--config` | `-c` | string | `""` | Custom config directory |
+| `--dry-run` | `-n` | bool | `false` | Show commands without executing |
 
 ### Configuration File Contracts
 
-**`.sdlc.json`** — `map[string]lib.Task` serialized as JSON:
+**`.sdlc.json`** — Maps build-file names to task definitions:
 ```json
 {
   "go.mod": {
@@ -179,80 +183,120 @@ Final command string with $VAR substitution
 }
 ```
 
-**`.sdlc.conf`** — Line-oriented, `#` comments, two line types:
-- `$KEY=VALUE` → environment variable
-- `--flag` or `--flag=value` → extra CLI argument
+**`.sdlc.conf`** — Environment variables and extra flags:
+```properties
+PORT=8080
+--verbose
+```
 
-### Internal Go API
+### Key Internal Interfaces
 
-| Package | Key Exported Symbols |
-|---------|---------------------|
-| `lib` | `Task` struct, `Task.Command(field)`, `NewExecutor(ctx, command)`, `Executor.SetDir/SetEnv/SetOutput/Execute` |
-| `engine` | `Project` struct, `DetectProjects(workDir, tasks) → ([]Project, error)` |
-| `config` | `Load(confDir)`, `LoadLocal(confDir)`, `LoadEnvConfig(dir)` |
+- `lib.Task.Command(field string) (string, error)` — Returns the shell command for a lifecycle action. Valid fields: `"run"`, `"test"`, `"build"`, `"install"`, `"clean"`.
+- `engine.DetectProjects(workDir string, tasks map[string]lib.Task) ([]Project, error)` — Scans directory tree, returns sorted project list.
+- `config.Load(confDir string) (map[string]lib.Task, error)` — Loads task config (creates file if missing).
+- `config.LoadEnvConfig(dir string) (*EnvSettings, error)` — Loads `.sdlc.conf` (returns nil if absent).
+- `lib.NewExecutor(ctx context.Context, command string) *Executor` — Creates process executor with process-group signal handling.
+
+---
 
 ## Scalability & Performance Considerations
 
 ### Current Strengths
-- **Concurrent module execution**: Multi-module projects run in parallel goroutines with `sync.WaitGroup`.
-- **Process group isolation**: Each spawned process gets its own process group (`Setpgid: true`), enabling clean SIGTERM-based shutdown without orphan processes.
-- **Shallow directory scanning**: `DetectProjects` only scans the root and immediate subdirectories (not recursive), keeping detection O(n) where n is the number of top-level entries.
+- **Concurrent module execution**: Multi-module projects run via goroutines with `sync.WaitGroup`, providing parallelism.
+- **Process group isolation**: `Setpgid: true` ensures child processes are properly terminated on cancel, preventing zombie processes.
+- **Deterministic ordering**: Projects sorted by path ensures consistent behavior across runs.
 
 ### Bottlenecks & Risks
-1. **Watch mode polling**: `hasChanges()` performs a full `filepath.Walk` every 500ms per module. For large monorepos with many files, this is expensive. No `.gitignore` awareness — only hardcoded directory exclusions (`.git`, `node_modules`, `dist`, `build`, `target`, `bin`, `pkg`).
-2. **Command splitting fragility**: `lib.NewExecutor` splits commands on spaces (`strings.Split(command, " ")`). This breaks for commands with quoted arguments, e.g., `go run -ldflags "-X main.version=1.0"`. Should use shell parsing or `bash -c`.
-3. **No output buffering coordination**: Multiple goroutines write to `os.Stdout`/`os.Stderr` concurrently via `PrefixWriter`. While `PrefixWriter` is not thread-safe for interleaved writes from the same module, cross-module interleaving could produce garbled output under high throughput.
-4. **Watch mode restarts all modules**: A file change in any module triggers a restart of **all** modules (documented as "smart partial restarts coming soon"). This is wasteful for independent modules.
+1. **Polling-based file watching**: `hasChanges()` uses `filepath.Walk` every 500ms. For large monorepos with many files, this is O(n) per tick. A platform-native file watcher (e.g., `fsnotify`) would reduce CPU usage significantly.
+2. **Full restart on any change**: In watch mode, *all* modules restart when any file changes in any module. The README acknowledges "smart partial restarts coming soon." This is the biggest scalability gap for multi-module setups.
+3. **Linear project detection**: `DetectProjects()` walks the entire tree depth-first. For very deep or wide directory structures, this could be slow. The `skipDirs` map mitigates this for common cases.
+4. **Command splitting naiveté**: `lib.NewExecutor` splits commands on spaces (`strings.Split(command, " ")`), which breaks for quoted arguments or paths with spaces. This is a correctness bug, not just a performance issue.
+5. **No output buffering strategy**: `PrefixWriter` writes directly to stdout/stderr. In high-throughput scenarios (e.g., test output from many modules), interleaved writes could cause garbled output.
+
+---
 
 ## Security Posture
 
 ### Current State
-- **No privilege escalation**: Runs as the invoking user; no `sudo` or setuid.
-- **Process group isolation**: Prevents signal leakage between modules.
-- **No network exposure**: Purely local CLI tool; no server, no remote config fetching.
+- **No command sanitization**: User-provided config (`.sdlc.json`) directly maps to shell commands executed via `os/exec`. A malicious `.sdlc.json` in a cloned repo could execute arbitrary commands. This is an **inherent design trade-off** — the tool's purpose is to run configured commands.
+- **Environment variable injection**: `.sdlc.conf` values are injected into subprocess environments without validation. Values from untrusted sources could override critical env vars (e.g., `PATH`).
+- **No privilege escalation**: The tool runs as the invoking user with no elevated permissions.
+- **Process group cleanup**: Proper SIGTERM-based shutdown with process groups prevents orphan processes.
+- **No network surface**: The tool is entirely local — no network listeners, no outbound connections.
 
-### Concerns
-1. **Arbitrary command execution**: The `.sdlc.json` config defines shell commands that are executed directly. A malicious `.sdlc.json` in a cloned repo could execute arbitrary code. No sandboxing, no allow-listing of commands.
-2. **Environment variable injection**: `.sdlc.conf` can set arbitrary environment variables (e.g., `PATH`, `LD_PRELOAD`). No validation or restriction.
-3. **No config file integrity**: No signature verification or hash checking for config files. Supply-chain risk if a project's `.sdlc.json` is tampered with.
-4. **Command injection via env substitution**: The `$VAR` substitution in `runProject()` uses simple `strings.ReplaceAll`, which could be exploited if env values contain shell metacharacters and the command is later interpreted by a shell (currently it isn't — `exec.Command` doesn't use a shell — but this is fragile).
+### Recommendations
+- Document the trust model: `.sdlc.json` and `.sdlc.conf` should only be sourced from trusted locations.
+- Consider a `--no-local-config` flag to prevent loading untrusted local configs.
+- Validate that env var keys in `.sdlc.conf` don't override sensitive system variables unless explicitly intended.
+
+---
 
 ## Structural Improvement Suggestions
 
-### 1. Shell-Aware Command Parsing (Critical)
-**File:** `lib/executor.go:25`
-**Problem:** `strings.Split(command, " ")` cannot handle quoted arguments.
-**Fix:** Use `exec.Command("sh", "-c", command)` or a proper shell-word parser like `github.com/kballard/go-shellquote`.
+### 1. Fix Command Parsing (Correctness — High Priority)
+`lib/executor.go:25` splits on spaces, breaking for commands like `go run "my app/main.go"` or paths with spaces. Use `sh -c` wrapping or a proper shell-word parser.
 
-### 2. Native File Watcher (High Priority)
-**File:** `cmd/commands.go:481` (`hasChanges`)
-**Problem:** Polling `filepath.Walk` every 500ms is CPU-intensive and doesn't respect `.gitignore`.
-**Fix:** Use `github.com/fsnotify/fsnotify` for native OS file events. Parse `.gitignore` (or reuse `golang.org/x/tools/go/buildutil` ignore patterns) to filter events.
+```go
+// Current (broken for quoted args):
+program := strings.Split(command, " ")[0]
+cmd := exec.CommandContext(ctx, program, strings.Split(command, " ")[1:]...)
 
-### 3. Extract Orchestration from `cmd/` (Medium Priority)
-**File:** `cmd/commands.go` (716 lines)
-**Problem:** This file handles CLI definition, config loading, project filtering, interactive prompts, watch loop, output formatting, and env merging. It's difficult to test without a full Cobra setup.
-**Fix:** Extract an `orchestrator` package (or expand `engine/`) to own the `runTask` / `watchAndRunLoop` / `filterProjects` logic. The `cmd/` package should be a thin CLI adapter.
+// Suggested fix:
+cmd := exec.CommandContext(ctx, "sh", "-c", command)
+```
 
-### 4. Per-Module Watch Restart (Medium Priority)
-**File:** `cmd/commands.go:269` (`watchAndRunLoop`)
-**Problem:** Any file change restarts all modules.
-**Fix:** Track which module's directory the changed file belongs to and only restart that module. This is partially scaffolded (the loop already iterates per-project) but the `hasChanges` check doesn't scope to the triggering module.
+### 2. Replace Polling with `fsnotify` (Performance — Medium Priority)
+The 500ms polling loop in `watchAndRunLoop` is CPU-wasteful for large repos. The Go ecosystem has a mature, cross-platform library:
+```
+github.com/fsnotify/fsnotify
+```
+This would provide instant, event-driven file change detection.
 
-### 5. Config Validation & Safety (Medium Priority)
-**Files:** `config/config.go`, `cmd/commands.go`
-**Problem:** No validation of config values; arbitrary commands and env vars are accepted silently.
-**Fix:** Add a `--trusted-config` flag or a config signature mechanism. At minimum, warn when executing commands from an untrusted local `.sdlc.json`.
+### 3. Implement Partial Module Restarts (Feature — Medium Priority)
+Currently, any file change restarts all modules. Track which module a changed file belongs to and only restart that module. The `hasChanges()` function already returns the changed file path — the infrastructure is partially there.
 
-### 6. Structured Logging (Low Priority)
-**Problem:** All output goes through `fmt.Printf`/`fmt.Println` with ANSI color codes inline.
-**Fix:** Introduce a `log/slog`-based logger with configurable output format (plain, JSON, colorized). This would also enable log-level control (`--verbose`, `--quiet`).
+### 4. Extract Orchestration from `cmd/commands.go` (Architecture — Medium Priority)
+`commands.go` is 700+ lines and mixes CLI concerns (banner printing, color codes, interactive prompts) with orchestration logic (watch loop, env merging, command substitution). Extract an `orchestrator` package:
 
-### 7. Test Coverage Expansion (Low Priority)
-**Problem:** Tests exist only for `lib/` (task and executor). No tests for `engine/`, `config/`, or the orchestration logic in `cmd/`.
-**Fix:** Add table-driven tests for `DetectProjects` (with temp directories), `LoadEnvConfig` (with fixture files), and `filterProjects`. Extract `runTask` logic to a testable function that accepts interfaces for config loading and project detection.
+```
+cmd/          → CLI definitions, flag binding, user interaction only
+orchestrator/ → runTask(), watchAndRunLoop(), prepareProjectEnv()
+```
 
-### 8. Remove Hardcoded Vite Workaround (Low Priority)
-**File:** `cmd/commands.go:421-428`
-**Problem:** `runProject` has a hardcoded cleanup of `node_modules/.vite-temp`. This is a framework-specific hack.
-**Fix:** Make this configurable via `.sdlc.conf` (e.g., a `clean_before_run` directive) or remove it entirely and let users handle it in their build commands.
+### 5. Introduce Structured Logging (Observability — Low Priority)
+Replace `fmt.Printf` calls with a structured logger (e.g., `slog` from Go 1.21+ stdlib). This would enable:
+- Log level control (`--verbose`, `--quiet`)
+- JSON log output for CI/CD integration
+- Timestamps and module context in every log line
+
+### 6. Add Integration Tests (Quality — Medium Priority)
+Current tests cover `engine.DetectProjects`, `config.ParseEnvConfig`, `lib.Task.Command`, and `lib.Executor` in isolation. Missing:
+- End-to-end tests that exercise the full `executeTask()` → `runProject()` → `runCommand()` path
+- Watch mode behavior tests (mock file changes, verify restart)
+- Config cascade tests (local + global + CLI flag interaction)
+
+### 7. Make `skipDirs` Configurable (Flexibility — Low Priority)
+The `skipDirs` map in `engine/engine.go` is hardcoded. Allow users to add custom skip patterns via `.sdlc.json` or a dedicated ignore file, similar to `.gitignore`.
+
+### 8. Add Shell Completion Support (UX — Low Priority)
+Cobra natively supports shell completions (bash, zsh, fish, PowerShell). Adding `completion` subcommands would improve developer experience with minimal effort.
+
+---
+
+## File Reference Map
+
+| Path | Lines | Role |
+|------|-------|------|
+| `main.go` | 8 | Entry point |
+| `cmd/root.go` | 70 | Root command, global flags, workdir resolution |
+| `cmd/commands.go` | 714 | Subcommands, orchestration, watch loop, interactive UI |
+| `cmd/executor.go` | 25 | Bridge to lib.Executor |
+| `engine/engine.go` | 147 | Project detection via directory walking |
+| `engine/engine_test.go` | 165 | Detection tests (6 cases) |
+| `config/config.go` | 189 | Config loading, env parsing, merging |
+| `config/config_test.go` | 259 | Config tests (8 cases) |
+| `lib/task.go` | 36 | Task type definition |
+| `lib/task_test.go` | 100 | Task tests (5 cases) |
+| `lib/executor.go` | 86 | Process execution with signal handling |
+| `lib/executor_test.go` | 60 | Executor tests (5 cases) |
+| `.sdlc.json` | 22 | Project's own config (go.mod, package.json, pom.xml, Package.swift) |

@@ -5,8 +5,9 @@
 - **Language**: Go 1.20+
 - **CLI Framework**: [spf13/cobra](https://github.com/spf13/cobra) v1.8.1 — command routing and flag parsing
 - **Interactive Prompts**: [manifoldco/promptui](https://github.com/manifoldco/promptui) v0.9.0 — multi-module selection UI
-- **No external build/deploy tooling** — pure `go build` / `go install`
-- **Total codebase**: ~1,390 lines of Go across 10 source files
+- **Standard Library**: `os/exec`, `os/signal`, `syscall`, `filepath.WalkDir`, `encoding/json`, `context`
+- **No external build/lint tools** — vanilla `go build`, `go test`, `go vet`
+- **Total codebase**: ~1,860 lines of Go across 12 files (including tests)
 
 ## Repository Structure
 
@@ -15,113 +16,94 @@
 ├── main.go                  # Entry point — calls cmd.Execute()
 ├── go.mod / go.sum          # Module definition (module name: "sdlc")
 ├── .sdlc.json               # Project's own config (defines go.mod, package.json, pom.xml, Package.swift)
-├── .gitignore               # Ignores the compiled binary ("sdlc")
-├── cmd/
-│   ├── root.go              # Root cobra command, global flags (--watch, --module, --dir, etc.), resolveWorkDir()
-│   ├── commands.go          # Subcommands (run/test/build/install/clean), execution orchestration, watch mode, PrefixWriter, interactive module selection
+├── .gitignore               # Ignores compiled binary "sdlc"
+├── cmd/                     # CLI layer — cobra commands, orchestration, watch mode
+│   ├── root.go              # Root command definition, global flags, resolveWorkDir()
+│   ├── commands.go          # Subcommands (run/test/build/install/clean), executeTask(), watchAndRunLoop(), PrefixWriter
 │   └── executor.go          # Thin wrapper: cmd.runCommand() → lib.NewExecutor()
-├── engine/
-│   └── engine.go            # Project detection: scans root + immediate subdirs for known build files, returns []Project
-├── config/
-│   └── config.go            # Config loading: .sdlc.json (task definitions), .sdlc.conf (env vars + flags), local vs global merge
-├── lib/
-│   ├── task.go              # Task struct (Run/Test/Build/Install/Clean) with Command() accessor
-│   ├── executor.go          # Executor: wraps os/exec.Cmd with process group management, SIGTERM on cancel
-│   ├── task_test.go         # Unit tests for Task.Command() — passing
-│   └── executor_test.go     # Unit tests for Executor — BROKEN (see Known Pain Points)
-└── .planner/                # Project planning artifacts (features.md, issues.md, sprints.md, project_purpose.md)
+├── engine/                  # Project detection engine
+│   ├── engine.go            # DetectProjects() — recursive filesystem walk, build-file matching
+│   └── engine_test.go       # 6 tests: single/multi/nested modules, skip dot-dirs, skip node_modules
+├── config/                  # Configuration loading and parsing
+│   ├── config.go            # .sdlc.json loader, .sdlc.conf parser, env merging
+│   └── config_test.go       # 8 tests: env parsing, quoted values, merge behavior, nil inputs
+└── lib/                     # Core types and process execution
+    ├── task.go              # Task struct (Run/Test/Build/Install/Clean) + Command() method
+    ├── task_test.go         # 6 tests: valid actions, invalid/empty fields, empty task
+    ├── executor.go          # Executor — wraps os/exec.Cmd with process group, SIGTERM on cancel
+    └── executor_test.go     # 5 tests: construction, arg parsing, success/failure execution
 ```
 
 ## Entry Points & Main Flow
 
-1. **`main.go`** → `cmd.Execute()` → cobra dispatches to subcommand
-2. **Subcommand handler** (e.g., `runCmd.RunE`) → `executeTask(cmd, "run")`
-3. **`executeTask`** (`cmd/commands.go:97`):
+1. **`main.go`** → `cmd.Execute()` → cobra dispatches to the matching subcommand.
+2. **`cmd/commands.go:executeTask()`** is the central orchestrator for all actions:
    - Resolves working directory (supports `~` expansion)
-   - Creates signal-aware context (SIGINT/SIGTERM)
-   - Calls `runTask(ctx, wd, action)`
-4. **`runTask`** (`cmd/commands.go:112`):
-   - Loads config: `config.Load(cfgFile)` or `config.LoadLocal(wd)` with fallback to `config.Load("")` (home dir)
-   - Detects projects: `engine.DetectProjects(wd, tasks)` — scans root + 1 level of subdirectories
-   - Loads root `.sdlc.conf` for env/flags
-   - Filters projects via `filterProjects()` (respects `--module`, `--ignore`, `--all`)
-   - If multiple projects and no explicit selection → interactive `promptModuleSelection()`
-   - If `--dry-run` → prints commands without executing
-   - If `--watch` → enters `watchAndRunLoop()` (polling every 500ms, restarts on file change)
-   - Otherwise → runs all selected projects concurrently via goroutines + `sync.WaitGroup`
-5. **`runProject`** (`cmd/commands.go:419`):
-   - Cleans up `.vite-temp` if present (workaround for Vite EPERM errors)
-   - Resolves command string via `p.Task.Command(action)`
-   - Merges env vars (root `.sdlc.conf` → module `.sdlc.conf` → CLI `--extra-args`)
-   - Performs `$VAR` / `${VAR}` substitution in command string
-   - Delegates to `cmd.runCommand()` → `lib.NewExecutor(ctx, cmdStr)` → `executor.Execute()`
+   - Creates a signal-aware `context.Context` (SIGINT/SIGTERM)
+   - Loads task definitions from config (local `.sdlc.json` → global `~/.sdlc.json`)
+   - Calls `engine.DetectProjects()` to scan the filesystem for known build files
+   - Loads `.sdlc.conf` for env vars and extra flags
+   - Filters projects by `--module`, `--ignore`, `--all` flags
+   - If multiple projects and no explicit selection → interactive `promptui` picker
+   - **Watch mode** (`--watch`): enters `watchAndRunLoop()` — polls every 500ms via `filepath.Walk`, restarts changed modules
+   - **Normal mode**: launches all selected projects concurrently via goroutines + `sync.WaitGroup`
+3. **`cmd/executor.go:runCommand()`** bridges to `lib.NewExecutor()` which creates an `os/exec.Cmd` with process group isolation (`Setpgid: true`) and a custom `Cancel` function that sends SIGTERM to the process group.
 
-**Key data flow**: `.sdlc.json` → `map[string]lib.Task` → `engine.DetectProjects()` → `[]engine.Project` → execution
+**Key data flow**: `.sdlc.json` → `map[string]lib.Task` → `engine.DetectProjects()` → `[]engine.Project` → `lib.Task.Command(action)` → `lib.Executor.Execute()`
 
 ## External Dependencies & Integrations
 
 | Dependency | Version | Purpose |
 |---|---|---|
 | `github.com/spf13/cobra` | v1.8.1 | CLI command routing, flag parsing |
-| `github.com/spf13/pflag` | v1.0.5 | Flag handling (transitive via cobra) |
 | `github.com/manifoldco/promptui` | v0.9.0 | Interactive module selection prompt |
-| `github.com/chzyer/readline` | — | Line editing (transitive via promptui) |
-| `golang.org/x/sys` | — | Syscall wrappers (transitive via promptui) |
+| `github.com/spf13/pflag` | v1.0.5 | Flag parsing (transitive via cobra) |
+| `github.com/chzyer/readline` | v0.0.0-2018… | Line editing (transitive via promptui) |
+| `golang.org/x/sys` | v0.0.0-2018… | Syscall wrappers (transitive via promptui) |
 
-**No database, network, or cloud dependencies.** The tool is entirely local — it shells out to build tools (go, npm, mvn, swift, etc.) found on the user's PATH.
-
-**Configuration files consumed:**
-- `.sdlc.json` — JSON mapping build-file names (e.g., `go.mod`) to task command strings
-- `.sdlc.conf` — Key-value env vars (`$KEY=VALUE`) and CLI flags (`--flag=value`), parsed line-by-line
+**No database, network, or cloud integrations.** The tool is entirely local — it shells out to build tools (go, npm, mvn, swift) found on the user's PATH.
 
 ## Build / Test / Deploy
 
-### Build
-```bash
-go build -o sdlc .        # Produces binary named "sdlc"
-go install .              # Installs to $GOPATH/bin
-```
-
-### Test
-```bash
-go test ./...             # Currently FAILS — see Known Pain Points
-```
-
-### Deploy
-No CI/CD pipeline detected. The `.gitignore` only contains the compiled `sdlc` binary. Installation is manual via `go install .` from source.
+- **Build**: `go build -o sdlc .` or `go install .`
+- **Test**: `go test ./...` — all 3 packages have tests (25 tests total), all pass
+- **Lint**: `go vet ./...` — clean, no issues
+- **Install**: Clone repo, `go install .`, ensure `$(go env GOPATH)/bin` is in PATH
+- **No CI/CD configuration** found in the repository (no `.github/`, `Makefile`, `Dockerfile`, etc.)
+- **No release tooling** — binary is built locally
 
 ## Code Quality Notes
 
 **Strengths:**
-- Clean separation of concerns: `lib` (core types/execution), `config` (file I/O), `engine` (detection), `cmd` (orchestration/UI)
-- Proper process group management in `lib/executor.go` — uses `Setpgid: true` and sends SIGTERM to the entire process group on cancellation, preventing orphan processes
-- Signal handling via `signal.NotifyContext` for graceful shutdown
-- `PrefixWriter` in `cmd/commands.go` provides color-coded, line-prefixed output for multi-module scenarios
-- Config layering: global `~/.sdlc.json` → local `.sdlc.json` → module `.sdlc.conf` → CLI flags
+- Clean separation of concerns: `lib` (types + execution), `config` (parsing), `engine` (detection), `cmd` (orchestration)
+- Good test coverage for `lib/`, `config/`, and `engine/` — 25 tests covering core logic
+- Proper process group management in `lib/executor.go` (`Setpgid: true`, SIGTERM to process group on cancel)
+- Context-aware cancellation throughout the execution pipeline
+- Deterministic project ordering via `sort.Slice` in `DetectProjects()`
+- Symlink resolution and deduplication in directory walking
 
-**Weaknesses:**
-- **Tests are broken**: `lib/executor_test.go` calls `NewExecutor(string)` but the signature was changed to `NewExecutor(context.Context, string)` — all 5 test functions fail to compile
-- **No tests for `cmd/`, `config/`, or `engine/` packages** — the orchestration, config loading, and project detection logic are completely untested
-- **Command splitting is naive**: `lib/executor.go:25` splits on spaces (`strings.Split(command, " ")`), which breaks for commands with quoted arguments or paths containing spaces
-- **Watch mode uses polling** (500ms interval via `filepath.Walk`) rather than OS-native file watchers (e.g., `fsnotify`) — this is CPU-inefficient for large projects
-- **Environment variable substitution** (`cmd/commands.go:458-470`) is done via simple string replacement, which can cause unintended substitutions (e.g., `$HOME` inside a longer word)
-- **Hardcoded Vite workaround** (`cmd/commands.go:421-428`) — cleans `node_modules/.vite-temp` on every run, which is a domain-specific hack in generic tooling
-- **`promptModuleSelection`** mutates the global `ignoreMods` slice as a side effect (line 706), which is fragile and non-obvious
+**Areas for improvement:**
+- `cmd/commands.go` is 714 lines — the largest file by far, handling commands, watch mode, filtering, prompting, prefix writing, and banner printing. It could be decomposed.
+- No tests for `cmd/` package — the orchestration logic (filtering, watch loop, env substitution, dry-run) is untested
+- The `Executor` splits commands on spaces (`strings.Split(command, " ")`) which breaks with quoted arguments or paths containing spaces
+- Environment variable substitution in commands (`$VAR` / `${VAR}`) is done via naive `strings.ReplaceAll` — could match unintended substrings (e.g., `$PORT` inside `$PORTFOLIO`)
+- The watch mode uses polling (500ms ticker + `filepath.Walk`) rather than OS-native file watchers (e.g., `fsnotify`) — this is less efficient for large projects
+- The `.sdlc.conf` parser treats lines starting with `-` as flags (`--flag=value`), but the README example shows bare flags (`--debug`, `--verbose`) without `=`, which would be silently skipped
 
 ## Known Pain Points & Technical Debt
 
-1. **Broken test suite** (`lib/executor_test.go`): The `NewExecutor` function signature was changed from `(string)` to `(context.Context, string)` but the tests were not updated. All 5 executor tests fail to compile. This must be fixed before any CI can run.
+1. **Command splitting is fragile** (`lib/executor.go:25-27`): `strings.Split(command, " ")` cannot handle quoted arguments, escaped spaces, or complex shell syntax. Commands like `go run -ldflags "-X main.version=1.0" .` will break.
 
-2. **Zero test coverage for core logic**: The `config`, `engine`, and `cmd` packages have no tests at all. The project detection, config loading/merging, filtering, watch loop, and env substitution logic are all untested.
+2. **No shell interpretation**: Commands are executed directly via `exec.Command`, not through a shell (`sh -c`). This means shell features like pipes (`|`), redirections (`>`), `&&`, glob patterns, and environment variable expansion are not available unless the user explicitly wraps in `sh -c`.
 
-3. **Naive command parsing**: `strings.Split(command, " ")` in `lib/executor.go:25-27` does not handle quoted arguments, escaped spaces, or shell metacharacters. Should use `sh -c` or a proper shell-word parser.
+3. **Watch mode restarts ALL modules on any change** (`cmd/commands.go:382-385`): The README mentions "smart partial restarts coming soon" but currently any file change in any module triggers a restart of all modules. The `hasChanges()` function identifies which file changed but the restart logic doesn't use this to selectively restart only the affected module.
 
-4. **Polling-based file watcher**: The watch mode in `cmd/commands.go:269-389` walks the entire directory tree every 500ms. For large monorepos this will be slow and CPU-intensive. Should integrate `github.com/fsnotify/fsnotify` for event-driven watching.
+4. **Hardcoded Vite cleanup** (`cmd/commands.go:408-416`): There's a special-case cleanup of `node_modules/.vite-temp` before each run, which is a workaround for a specific Vite EPERM issue. This should be configurable or generalized.
 
-5. **Single-level directory scanning**: `engine.DetectProjects` only checks the root and immediate subdirectories. Deeply nested projects (e.g., `apps/api/backend/go.mod`) are not detected.
+5. **Color handling is not terminal-aware**: ANSI color codes are always emitted regardless of whether stdout is a TTY. Piping output to a file or another command will include escape sequences.
 
-6. **No `.gitignore` awareness in project detection**: The engine hardcodes a skip list (`.git`, `.idea`, `.planner`, `node_modules`) rather than reading `.gitignore`, so custom-ignored directories will still be scanned.
+6. **No `.gitignore`-aware file watching**: The `hasChanges()` function has its own hardcoded skip list (`.git`, `node_modules`, `dist`, etc.) rather than reading `.gitignore`. This can diverge from what the user expects.
 
-7. **Global mutable state**: `cmd/commands.go` uses package-level `var` for all CLI flags (`workDir`, `extraArgs`, `targetMod`, etc.) and `promptModuleSelection` mutates `ignoreMods` as a side effect. This makes the code harder to test and reason about.
+7. **`promptModuleSelection` mutates global state** (`cmd/commands.go:694`): Unselected modules are appended to the global `ignoreMods` slice as a side effect, which is fragile and makes the function harder to test.
 
-8. **No versioning or release mechanism**: No `Makefile`, no goreleaser config, no semantic versioning. The binary name is just `sdlc` with no version flag.
+8. **No versioning or help for config schema**: There's no schema validation for `.sdlc.json` — invalid or missing fields are silently accepted, and missing actions (e.g., no `install` command defined) will produce empty command strings that fail at execution time.

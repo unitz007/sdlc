@@ -39,7 +39,11 @@ func (p *parallelValue) Set(s string) error {
 	p.raw = s
 	return nil
 }
-func (p *parallelValue) Type() string { return "int" }
+func (p *parallelValue) Type() string { return "string" }
+
+// NoOptDefValue implements the pflag NoOptDefVal interface so that bare --parallel/-p
+// (without a value) is accepted and treated as unbounded concurrency.
+func (p *parallelValue) NoOptDefValue() string { return "true" }
 
 // RootCmd represents the base command when called without any subcommands
 var RootCmd = &cobra.Command{

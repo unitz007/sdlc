@@ -25,7 +25,6 @@ var (
 	verbose          bool
 	noColor          bool
 	parallelFlag     parallelValue
-	showVersion      bool
 )
 
 // parallelValue is a custom pflag.Value that allows --parallel to be used
@@ -48,17 +47,13 @@ func (p *parallelValue) NoOptDefValue() string { return "true" }
 
 // RootCmd represents the base command when called without any subcommands
 var RootCmd = &cobra.Command{
-	Use:   "sdlc",
-	Short: "SDLC helps manage the full lifecycle of your software project",
+	Use:    "sdlc",
+	Short:  "SDLC helps manage the full lifecycle of your software project",
 	Long: `SDLC is a lightweight CLI tool that provides a unified interface 
 for common software development lifecycle commands — run, test, and build — 
 across different project types.`,
+	Version: Version,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		if showVersion {
-			fmt.Printf("sdlc version %s\n", Version)
-			os.Exit(0)
-		}
-
 		lib.InitColor(noColor)
 
 		resolved, err := resolveConfigDir(cfgFile)
@@ -90,6 +85,7 @@ func Execute() {
 }
 
 func init() {
+	RootCmd.SetVersionTemplate("sdlc version {{.Version}}\n")
 	RootCmd.PersistentFlags().StringVarP(&workDir, "dir", "d", "", "Absolute path to project directory")
 	RootCmd.PersistentFlags().StringSliceVarP(&extraArgs, "extra-args", "e", []string{}, "Extra arguments to pass to the build tool (repeatable, or space-separated within a single value)")
 	RootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "Path to directory for configuration file")
@@ -99,10 +95,9 @@ func init() {
 	RootCmd.PersistentFlags().BoolVarP(&watchMode, "watch", "w", false, "Watch for file changes and restart")
 	RootCmd.PersistentFlags().StringVar(&debounceDuration, "debounce", "500ms", "Debounce window for watch mode (e.g. 500ms, 1s)")
 	RootCmd.PersistentFlags().BoolVarP(&dryRun, "dry-run", "n", false, "Show what would happen without executing commands (dry run)")
-	RootCmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "Show resolved commands and environment variables before execution")
+	RootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Show resolved commands and environment variables before execution")
 	RootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 	RootCmd.PersistentFlags().VarP(&parallelFlag, "parallel", "p", "Run modules concurrently (e.g., -p, -p 4)")
-	RootCmd.Flags().BoolVarP(&showVersion, "version", "v", false, "Print the version")
 }
 
 // resolveWorkDir handles the directory resolution logic including tilde expansion

@@ -250,7 +250,7 @@ func runTask(ctx context.Context, wd, action string) error {
 	}
 
 	// Parse the --parallel flag to determine execution mode
-	parallelLimit := parseParallelFlag(parallelStr)
+	parallelLimit := parseParallelFlag(parallelFlag.raw)
 	multi := len(selectedProjects) > 1
 
 	// Execute for each selected project

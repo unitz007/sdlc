@@ -147,6 +147,8 @@ Enable watch mode with `--watch` (or `-w`). SDLC will monitor all files in the p
 
 Pull requests are welcome! For major changes, please open an issue first to discuss what you would like to change.
 
+Please see [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines on how to contribute, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for our community standards.
+
 ## License
 
 [Apache 2.0](http://www.apache.org/licenses/LICENSE-2.0)

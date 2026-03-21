@@ -19,8 +19,12 @@ var defaultExcludedDirs = map[string]bool{
 	"build":        true,
 	"out":          true,
 	"target":       true,
+	"bin":          true,
+	"pkg":          true,
 	".idea":        true,
 	".vscode":      true,
+	".zed":         true,
+	".kael_index":  true,
 	".planner":     true,
 }
 

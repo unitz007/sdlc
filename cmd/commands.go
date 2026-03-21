@@ -389,31 +389,19 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 }
 
 func prepareProjectEnv(p engine.Project, rootEnvConfig *config.EnvSettings) (map[string]string, []string) {
-	finalEnv := make(map[string]string)
-	finalArgs := []string{}
+	// Load module-level config
+	modEnvConfig, _ := config.LoadEnvConfig(p.AbsPath)
 
-	// Apply root config
-	if rootEnvConfig != nil {
-		for k, v := range rootEnvConfig.Env {
-			finalEnv[k] = v
-		}
-		finalArgs = append(finalArgs, rootEnvConfig.Args...)
-	}
+	// Merge: module overrides root for env vars, module args appended after root args
+	merged := config.MergeEnvSettings(rootEnvConfig, modEnvConfig)
 
-	// Apply module config
-	modEnvConfig, err := config.LoadEnvConfig(p.AbsPath)
-	if err == nil && modEnvConfig != nil {
-		for k, v := range modEnvConfig.Env {
-			finalEnv[k] = v
-		}
-		finalArgs = append(finalArgs, modEnvConfig.Args...)
-	}
+	finalArgs := merged.Args
 
 	// Append extra args from CLI
 	if extraArgs != "" {
 		finalArgs = append(finalArgs, strings.Split(extraArgs, " ")...)
 	}
-	return finalEnv, finalArgs
+	return merged.Env, finalArgs
 }
 
 func runProject(ctx context.Context, p engine.Project, index int, action string, env map[string]string, args []string, multi bool) error {

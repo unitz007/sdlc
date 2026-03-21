@@ -103,27 +103,25 @@ func executeTask(cmd *cobra.Command, action string) error {
 }
 
 func runTask(ctx context.Context, wd, action string) error {
-	// Load configuration
-	var tasks map[string]lib.Task
+	// Load configuration: home config as base, project config as override
+	homeTasks, _ := config.LoadHome()
+
+	var overrideTasks map[string]lib.Task
 	var err error
 
 	if cfgFile != "" {
-		tasks, err = config.Load(cfgFile)
-	} else {
-		// Try loading from working directory first
-		tasks, err = config.LoadLocal(wd)
+		overrideTasks, err = config.LoadLocal(cfgFile)
 		if err != nil {
 			return fmt.Errorf("local config error: %w", err)
 		}
-		if tasks == nil {
-			// Fallback to global/home config
-			tasks, err = config.Load("")
+	} else {
+		overrideTasks, err = config.LoadLocal(wd)
+		if err != nil {
+			return fmt.Errorf("local config error: %w", err)
 		}
 	}
 
-	if err != nil {
-		return fmt.Errorf("configuration error: %w", err)
-	}
+	tasks := config.MergeTasks(homeTasks, overrideTasks)
 
 	// Detect projects
 	projects, err := engine.DetectProjects(wd, tasks)

@@ -3,6 +3,8 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"sdlc/lib"
+	"strings"
 	"testing"
 )
 
@@ -415,5 +417,274 @@ UNQUOTED=simple
 	}
 	if settings.Env["UNQUOTED"] != "simple" {
 		t.Errorf("expected UNQUOTED=simple, got %q", settings.Env["UNQUOTED"])
+	}
+}
+
+func TestLoadHomeDir_FileExists(t *testing.T) {
+	dir := t.TempDir()
+	content := `{"go.mod": {"run": "go run .", "test": "go test ./..."}}`
+	writeTestConf(t, dir, ".sdlc.json", content)
+
+	tasks, err := LoadHomeDir(dir)
+	if err != nil {
+		t.Fatalf("LoadHomeDir returned error: %v", err)
+	}
+	if tasks == nil {
+		t.Fatal("LoadHomeDir returned nil, expected non-nil map")
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(tasks))
+	}
+
+	task, ok := tasks["go.mod"]
+	if !ok {
+		t.Fatal("expected key 'go.mod' to exist")
+	}
+	if task.Run != "go run ." {
+		t.Errorf("expected Run='go run .', got %q", task.Run)
+	}
+	if task.Test != "go test ./..." {
+		t.Errorf("expected Test='go test ./...', got %q", task.Test)
+	}
+}
+
+func TestLoadHomeDir_FileNotExists(t *testing.T) {
+	dir := t.TempDir()
+
+	tasks, err := LoadHomeDir(dir)
+	if err != nil {
+		t.Fatalf("LoadHomeDir returned error: %v", err)
+	}
+	if tasks != nil {
+		t.Fatalf("expected nil tasks, got %+v", tasks)
+	}
+}
+
+func TestLoadHomeDir_InvalidJSON(t *testing.T) {
+	dir := t.TempDir()
+	writeTestConf(t, dir, ".sdlc.json", "{invalid json content")
+
+	tasks, err := LoadHomeDir(dir)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON, got nil")
+	}
+	if tasks != nil {
+		t.Fatalf("expected nil tasks on error, got %+v", tasks)
+	}
+	// Assert the error message contains the file path
+	expectedPath := filepath.Join(dir, ".sdlc.json")
+	if !strings.Contains(err.Error(), expectedPath) {
+		t.Errorf("expected error to contain path %q, got %q", expectedPath, err.Error())
+	}
+}
+
+func TestLoadHomeDir_EmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	writeTestConf(t, dir, ".sdlc.json", "")
+
+	tasks, err := LoadHomeDir(dir)
+	if err != nil {
+		t.Fatalf("LoadHomeDir returned error: %v", err)
+	}
+	if tasks == nil {
+		t.Fatal("expected non-nil map for empty file, got nil")
+	}
+	if len(tasks) != 0 {
+		t.Errorf("expected empty map, got %d entries", len(tasks))
+	}
+}
+
+func TestMergeTasks_OverrideWins(t *testing.T) {
+	base := map[string]lib.Task{
+		"go.mod": {Run: "go run ."},
+	}
+	override := map[string]lib.Task{
+		"go.mod": {Run: "go run ./cmd/server"},
+	}
+
+	result := MergeTasks(base, override)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(result))
+	}
+	if result["go.mod"].Run != "go run ./cmd/server" {
+		t.Errorf("expected Run='go run ./cmd/server' (override), got %q", result["go.mod"].Run)
+	}
+}
+
+func TestMergeTasks_BasePreserved(t *testing.T) {
+	base := map[string]lib.Task{
+		"go.mod":        {Run: "go run ."},
+		"package.json":  {Run: "npm start"},
+	}
+	override := map[string]lib.Task{
+		"go.mod": {Run: "go run ./cmd/server"},
+	}
+
+	result := MergeTasks(base, override)
+
+	if len(result) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(result))
+	}
+	// go.mod should come from override
+	if result["go.mod"].Run != "go run ./cmd/server" {
+		t.Errorf("expected go.mod Run='go run ./cmd/server' (override), got %q", result["go.mod"].Run)
+	}
+	// package.json should come from base
+	if result["package.json"].Run != "npm start" {
+		t.Errorf("expected package.json Run='npm start' (base), got %q", result["package.json"].Run)
+	}
+}
+
+func TestMergeTasks_NilInputs(t *testing.T) {
+	sample := map[string]lib.Task{
+		"go.mod": {Run: "go run ."},
+	}
+
+	t.Run("both nil", func(t *testing.T) {
+		result := MergeTasks(nil, nil)
+		if len(result) != 0 {
+			t.Errorf("expected empty map, got %d entries", len(result))
+		}
+	})
+
+	t.Run("only base non-nil", func(t *testing.T) {
+		result := MergeTasks(sample, nil)
+		if len(result) != 1 {
+			t.Fatalf("expected 1 entry, got %d", len(result))
+		}
+		if result["go.mod"].Run != "go run ." {
+			t.Errorf("expected Run='go run .', got %q", result["go.mod"].Run)
+		}
+	})
+
+	t.Run("only override non-nil", func(t *testing.T) {
+		result := MergeTasks(nil, sample)
+		if len(result) != 1 {
+			t.Fatalf("expected 1 entry, got %d", len(result))
+		}
+		if result["go.mod"].Run != "go run ." {
+			t.Errorf("expected Run='go run .', got %q", result["go.mod"].Run)
+		}
+	})
+}
+
+func TestLoadAndMerge_HomeOnly(t *testing.T) {
+	homeDir := t.TempDir()
+	projectDir := t.TempDir()
+
+	writeTestConf(t, homeDir, ".sdlc.json", `{"go.mod": {"run": "go run .", "test": "go test ./..."}}`)
+
+	homeTasks, err := LoadHomeDir(homeDir)
+	if err != nil {
+		t.Fatalf("LoadHomeDir returned error: %v", err)
+	}
+	projectTasks, err := LoadLocal(projectDir)
+	if err != nil {
+		t.Fatalf("LoadLocal returned error: %v", err)
+	}
+
+	result := MergeTasks(homeTasks, projectTasks)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(result))
+	}
+	task, ok := result["go.mod"]
+	if !ok {
+		t.Fatal("expected key 'go.mod' to exist")
+	}
+	if task.Run != "go run ." {
+		t.Errorf("expected Run='go run .', got %q", task.Run)
+	}
+	if task.Test != "go test ./..." {
+		t.Errorf("expected Test='go test ./...', got %q", task.Test)
+	}
+}
+
+func TestLoadAndMerge_ProjectOnly(t *testing.T) {
+	homeDir := t.TempDir()
+	projectDir := t.TempDir()
+
+	writeTestConf(t, projectDir, ".sdlc.json", `{"package.json": {"run": "npm start", "test": "npm test"}}`)
+
+	homeTasks, err := LoadHomeDir(homeDir)
+	if err != nil {
+		t.Fatalf("LoadHomeDir returned error: %v", err)
+	}
+	projectTasks, err := LoadLocal(projectDir)
+	if err != nil {
+		t.Fatalf("LoadLocal returned error: %v", err)
+	}
+
+	result := MergeTasks(homeTasks, projectTasks)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(result))
+	}
+	task, ok := result["package.json"]
+	if !ok {
+		t.Fatal("expected key 'package.json' to exist")
+	}
+	if task.Run != "npm start" {
+		t.Errorf("expected Run='npm start', got %q", task.Run)
+	}
+	if task.Test != "npm test" {
+		t.Errorf("expected Test='npm test', got %q", task.Test)
+	}
+}
+
+func TestLoadAndMerge_Merged(t *testing.T) {
+	homeDir := t.TempDir()
+	projectDir := t.TempDir()
+
+	// Home config: go.mod and package.json
+	writeTestConf(t, homeDir, ".sdlc.json", `{"go.mod": {"run": "go run .", "test": "go test ./..."}, "package.json": {"run": "npm start"}}`)
+
+	// Project config: overrides go.mod, adds pom.xml
+	writeTestConf(t, projectDir, ".sdlc.json", `{"go.mod": {"run": "go run ./cmd/server", "test": "go test -v ./..."}, "pom.xml": {"build": "mvn package"}}`)
+
+	homeTasks, err := LoadHomeDir(homeDir)
+	if err != nil {
+		t.Fatalf("LoadHomeDir returned error: %v", err)
+	}
+	projectTasks, err := LoadLocal(projectDir)
+	if err != nil {
+		t.Fatalf("LoadLocal returned error: %v", err)
+	}
+
+	result := MergeTasks(homeTasks, projectTasks)
+
+	if len(result) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(result))
+	}
+
+	// go.mod should come from project (override)
+	goTask, ok := result["go.mod"]
+	if !ok {
+		t.Fatal("expected key 'go.mod' to exist")
+	}
+	if goTask.Run != "go run ./cmd/server" {
+		t.Errorf("expected go.mod Run='go run ./cmd/server' (override), got %q", goTask.Run)
+	}
+	if goTask.Test != "go test -v ./..." {
+		t.Errorf("expected go.mod Test='go test -v ./...' (override), got %q", goTask.Test)
+	}
+
+	// package.json should come from home (base, not overridden)
+	pkgTask, ok := result["package.json"]
+	if !ok {
+		t.Fatal("expected key 'package.json' to exist")
+	}
+	if pkgTask.Run != "npm start" {
+		t.Errorf("expected package.json Run='npm start' (base), got %q", pkgTask.Run)
+	}
+
+	// pom.xml should come from project (unique to override)
+	pomTask, ok := result["pom.xml"]
+	if !ok {
+		t.Fatal("expected key 'pom.xml' to exist")
+	}
+	if pomTask.Build != "mvn package" {
+		t.Errorf("expected pom.xml Build='mvn package', got %q", pomTask.Build)
 	}
 }

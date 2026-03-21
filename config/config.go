@@ -173,6 +173,64 @@ func LoadLocal(confDir string) (map[string]lib.Task, error) {
 	return tasks, nil
 }
 
+// LoadHomeDir reads the .sdlc.json configuration file from the given home directory.
+// If the file does not exist, it returns (nil, nil) with no error.
+// If the file exists but is empty, it returns an empty map.
+// If the file exists with content, it unmarshals into map[string]lib.Task.
+// On unmarshal error, it returns an error wrapping the path.
+func LoadHomeDir(homeDir string) (map[string]lib.Task, error) {
+	configPath := filepath.Join(homeDir, configFileName)
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		return nil, nil
+	}
+
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	if len(content) == 0 {
+		return make(map[string]lib.Task), nil
+	}
+
+	var tasks map[string]lib.Task
+	if err := json.Unmarshal(content, &tasks); err != nil {
+		return nil, fmt.Errorf("invalid configuration structure in %s: %w", configPath, err)
+	}
+
+	return tasks, nil
+}
+
+// LoadHome is a convenience entry point that loads the .sdlc.json configuration
+// from the user's home directory. It calls os.UserHomeDir() and delegates to LoadHomeDir.
+func LoadHome() (map[string]lib.Task, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user home directory: %w", err)
+	}
+	return LoadHomeDir(homeDir)
+}
+
+// MergeTasks returns a new map containing all keys from base, then all keys from
+// override (overwriting duplicates). Nil inputs are treated as empty maps.
+func MergeTasks(base, override map[string]lib.Task) map[string]lib.Task {
+	result := make(map[string]lib.Task)
+
+	if base != nil {
+		for k, v := range base {
+			result[k] = v
+		}
+	}
+
+	if override != nil {
+		for k, v := range override {
+			result[k] = v
+		}
+	}
+
+	return result
+}
+
 func getConfigFile(confDir string) (string, error) {
 	var configPath string
 	if confDir != "" {

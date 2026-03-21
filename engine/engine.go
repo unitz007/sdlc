@@ -10,29 +10,26 @@ import (
 	"strings"
 )
 
+// defaultExcludedDirs contains directory names that should never be scanned for build files.
+var defaultExcludedDirs = map[string]bool{
+	"node_modules": true,
+	"vendor":       true,
+	".git":         true,
+	"dist":         true,
+	"build":        true,
+	"out":          true,
+	"target":       true,
+	".idea":        true,
+	".vscode":      true,
+	".planner":     true,
+}
+
 // Project represents a detected project with its location and task definition
 type Project struct {
 	Name    string   // Name of the build file (e.g. go.mod)
 	Path    string   // Relative path to the directory containing the build file
 	AbsPath string   // Absolute path to the directory
 	Task    lib.Task // The task definition
-}
-
-// skipDirs contains directory names that should never be scanned for build files.
-var skipDirs = map[string]bool{
-	".git":        true,
-	".idea":       true,
-	".planner":    true,
-	"node_modules": true,
-	"vendor":      true,
-	"dist":        true,
-	"build":       true,
-	"target":      true,
-	"bin":         true,
-	"pkg":         true,
-	".vscode":     true,
-	".zed":        true,
-	".kael_index": true,
 }
 
 // DetectProjects recursively walks the working directory tree
@@ -52,8 +49,8 @@ func DetectProjects(workDir string, tasks map[string]lib.Task) ([]Project, error
 			return nil
 		}
 
-		// Skip directories in the skipDirs list
-		if skipDirs[d.Name()] {
+		// Skip directories in the defaultExcludedDirs list
+		if defaultExcludedDirs[d.Name()] {
 			return filepath.SkipDir
 		}
 

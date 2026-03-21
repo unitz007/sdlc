@@ -99,10 +99,10 @@ func init() {
 	RootCmd.PersistentFlags().BoolVarP(&watchMode, "watch", "w", false, "Watch for file changes and restart")
 	RootCmd.PersistentFlags().StringVar(&debounceDuration, "debounce", "500ms", "Debounce window for watch mode (e.g. 500ms, 1s)")
 	RootCmd.PersistentFlags().BoolVarP(&dryRun, "dry-run", "n", false, "Show what would happen without executing commands (dry run)")
-	RootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Show resolved commands and environment variables before execution")
+	RootCmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "Show resolved commands and environment variables before execution")
 	RootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 	RootCmd.PersistentFlags().VarP(&parallelFlag, "parallel", "p", "Run modules concurrently (e.g., -p, -p 4)")
-	RootCmd.Flags().BoolVarP(&showVersion, "version", "V", false, "Print the version")
+	RootCmd.Flags().BoolVarP(&showVersion, "version", "v", false, "Print the version")
 }
 
 // resolveWorkDir handles the directory resolution logic including tilde expansion

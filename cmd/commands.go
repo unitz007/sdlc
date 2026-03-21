@@ -288,7 +288,18 @@ func runTask(ctx context.Context, wd, action string) error {
 
 	if len(failedModules) > 0 {
 		fmt.Fprintf(os.Stderr, "[SDLC] %d module(s) failed: %s\n", len(failedModules), strings.Join(failedModules, ", "))
-		return &ExitCodeError{Code: 1, Err: fmt.Errorf("%d module(s) failed", len(failedModules))}
+		code := 1
+		if len(failedModules) == 1 {
+			// Preserve the specific exit code from the single failed module
+			// so CI/CD pipelines see the real failure code (e.g., 42 not 1).
+			for _, r := range allResults {
+				if r.exitCode != 0 {
+					code = r.exitCode
+					break
+				}
+			}
+		}
+		return &ExitCodeError{Code: code, Err: fmt.Errorf("%d module(s) failed", len(failedModules))}
 	}
 
 	return nil

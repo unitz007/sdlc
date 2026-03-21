@@ -106,7 +106,7 @@ func executeTask(cmd *cobra.Command, action string) error {
 
 // parseParallelFlag converts the --parallel string flag to a concurrency limit.
 // Returns: 0 = unbounded concurrency (default, preserves original behavior),
-// N = max N goroutines, -1 = sequential (--parallel=1).
+// N = max N goroutines (e.g. 1 = sequential).
 func parseParallelFlag(raw string) int {
 	if raw == "" {
 		return 0 // no flag specified: unbounded concurrency (original behavior)
@@ -278,8 +278,12 @@ func runTask(ctx context.Context, wd, action string) error {
 		go func(p engine.Project, index int, slot int) {
 			defer wg.Done()
 			if sem != nil {
-				sem <- struct{}{}
-				defer func() { <-sem }()
+				select {
+				case sem <- struct{}{}:
+					defer func() { <-sem }()
+				case <-ctx.Done():
+					return
+				}
 			}
 			env, args := prepareProjectEnv(p, rootEnvConfig)
 			cmdStr, _ := resolveCommandString(p, action, env, args)

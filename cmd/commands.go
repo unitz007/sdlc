@@ -102,6 +102,13 @@ func executeTask(cmd *cobra.Command, action string) error {
 	return runTask(ctx, wd, action)
 }
 
+// moduleResult captures the execution outcome for a single module.
+type moduleResult struct {
+	project  engine.Project
+	exitCode int
+	err      error
+}
+
 func runTask(ctx context.Context, wd, action string) error {
 	// Load configuration
 	var tasks map[string]lib.Task
@@ -232,7 +239,7 @@ func runTask(ctx context.Context, wd, action string) error {
 
 	// Execute for each selected project once
 	var wg sync.WaitGroup
-	errCh := make(chan error, len(selectedProjects))
+	results := make(chan moduleResult, len(selectedProjects))
 	for i, project := range selectedProjects {
 		wg.Add(1)
 
@@ -248,36 +255,40 @@ func runTask(ctx context.Context, wd, action string) error {
 		go func(p engine.Project, index int) {
 			defer wg.Done()
 			env, args := prepareProjectEnv(p, rootEnvConfig)
-			if err := runProject(ctx, p, index, action, env, args, len(selectedProjects) > 1); err != nil {
-				errCh <- err
+			err := runProject(ctx, p, index, action, env, args, len(selectedProjects) > 1)
+			code := 0
+			if err != nil {
+				var exitErr *ExitCodeError
+				if errors.As(err, &exitErr) {
+					code = exitErr.Code
+				} else {
+					code = 1
+				}
 			}
+			results <- moduleResult{project: p, exitCode: code, err: err}
 		}(project, originalIdx)
 	}
 
 	wg.Wait()
-	close(errCh)
+	close(results)
 
-	// Collect errors from all modules
-	var errs []error
-	for err := range errCh {
-		errs = append(errs, err)
+	// Collect results from all modules
+	var allResults []moduleResult
+	for r := range results {
+		allResults = append(allResults, r)
 	}
 
-	// For a single targeted module, propagate its exit code directly
-	if targetMod != "" && len(errs) > 0 {
-		var exitErr *ExitCodeError
-		if errors.As(errs[0], &exitErr) {
-			return exitErr
+	// Identify failed modules
+	var failedModules []string
+	for _, r := range allResults {
+		if r.exitCode != 0 {
+			failedModules = append(failedModules, r.project.Path)
 		}
-		return errs[0]
 	}
 
-	// For multiple modules, report all failures
-	if len(errs) > 0 {
-		for _, e := range errs {
-			fmt.Fprintf(os.Stderr, "[SDLC] %v\n", e)
-		}
-		return fmt.Errorf("%d module(s) failed", len(errs))
+	if len(failedModules) > 0 {
+		fmt.Fprintf(os.Stderr, "[SDLC] %d module(s) failed: %s\n", len(failedModules), strings.Join(failedModules, ", "))
+		return &ExitCodeError{Code: 1, Err: fmt.Errorf("%d module(s) failed", len(failedModules))}
 	}
 
 	return nil
@@ -486,7 +497,11 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 	// Run the command
 	if err := runCommand(ctx, cmdStr, p.AbsPath, out, errOut, env); err != nil {
 		fmt.Fprintf(errOut, "Command failed: %v\n", err)
-		return err
+		var exitErr *ExitCodeError
+		if errors.As(err, &exitErr) {
+			return exitErr
+		}
+		return &ExitCodeError{Code: 1, Err: err}
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package lib
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -12,10 +13,11 @@ import (
 // Executor wraps an os/exec.Cmd to run a shell command, stream its combined
 // stdout/stderr output, and handle OS interrupt signals gracefully.
 type Executor struct {
-	cmd    *exec.Cmd
-	Stdout io.Writer
-	Stderr io.Writer
-	Stdin  io.Reader
+	cmd      *exec.Cmd
+	Stdout   io.Writer
+	Stderr   io.Writer
+	Stdin    io.Reader
+	exitCode int
 }
 
 // NewExecutor creates a new Executor for the given command string. The command
@@ -78,9 +80,32 @@ func (e *Executor) Execute() error {
 	e.cmd.Stdin = e.Stdin
 
 	if err := e.cmd.Start(); err != nil {
+		e.exitCode = 1
 		return err
 	}
 
-	// Wait for the command to finish
-	return e.cmd.Wait()
+	err := e.cmd.Wait()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
+				e.exitCode = status.ExitStatus()
+			} else {
+				e.exitCode = 1
+			}
+		} else {
+			e.exitCode = 1
+		}
+		return err
+	}
+
+	e.exitCode = 0
+	return nil
+}
+
+// ExitCode returns the exit code of the last executed command.
+// Returns 0 if the command succeeded, the process exit code on failure,
+// or 1 if the command failed to start or was cancelled.
+func (e *Executor) ExitCode() int {
+	return e.exitCode
 }

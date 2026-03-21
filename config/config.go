@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	configFileName = ".sdlc.json"
+	ConfigFileName = ".sdlc.json"
 	envConfigName  = ".sdlc.conf"
 )
 
@@ -151,7 +151,7 @@ func Load(confDir string) (map[string]lib.Task, error) {
 // LoadLocal reads the .sdlc.json configuration file from the given directory path.
 // It returns nil if the file does not exist, without creating it.
 func LoadLocal(confDir string) (map[string]lib.Task, error) {
-	configPath := filepath.Join(confDir, configFileName)
+	configPath := filepath.Join(confDir, ConfigFileName)
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -178,7 +178,7 @@ func LoadLocal(confDir string) (map[string]lib.Task, error) {
 // This is similar to LoadLocal but is used for the --config flag where absence
 // should trigger fallback rather than file creation.
 func LoadFromDir(confDir string) (map[string]lib.Task, error) {
-	configPath := filepath.Join(confDir, configFileName)
+	configPath := filepath.Join(confDir, ConfigFileName)
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -203,13 +203,13 @@ func LoadFromDir(confDir string) (map[string]lib.Task, error) {
 func getConfigFile(confDir string) (string, error) {
 	var configPath string
 	if confDir != "" {
-		configPath = filepath.Join(confDir, configFileName)
+		configPath = filepath.Join(confDir, ConfigFileName)
 	} else {
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
 			return "", fmt.Errorf("failed to get user home directory: %w", err)
 		}
-		configPath = filepath.Join(homeDir, configFileName)
+		configPath = filepath.Join(homeDir, ConfigFileName)
 	}
 
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {

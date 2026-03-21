@@ -47,14 +47,22 @@ func ParseEnvConfig(filePath string) (*EnvSettings, error) {
 			continue
 		}
 
-		// Lines without '=' are silently skipped
+		// Lines without '=': bare flags (starting with -) go to Args, rest skipped
 		eqIdx := strings.Index(line, "=")
 		if eqIdx == -1 {
+			if strings.HasPrefix(line, "-") {
+				config.Args = append(config.Args, line)
+			}
 			continue
 		}
 
 		key := strings.TrimSpace(line[:eqIdx])
 		value := strings.TrimSpace(line[eqIdx+1:])
+
+		// Strip leading $ for backward compatibility ($LEGACY_VAR=value → LEGACY_VAR)
+		if strings.HasPrefix(key, "$") {
+			key = key[1:]
+		}
 
 		// Remove surrounding quotes if present
 		if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'')) {

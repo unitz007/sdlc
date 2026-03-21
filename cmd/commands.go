@@ -17,6 +17,7 @@ import (
 	"sdlc/config"
 	"sdlc/engine"
 	"sdlc/lib"
+	"sdlc/watch"
 
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
@@ -267,8 +268,32 @@ func runTask(ctx context.Context, wd, action string) error {
 }
 
 func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects []engine.Project, action string, rootEnvConfig *config.EnvSettings) error {
-	fmt.Println("[SDLC] Starting smart watchAndRunLoop")
-	defer fmt.Println("[SDLC] Exiting watchAndRunLoop")
+	// Parse debounce duration, falling back to 500ms on error.
+	parsedDebounce, err := time.ParseDuration(debounceDuration)
+	if err != nil {
+		fmt.Printf("[SDLC] Invalid debounce duration %q, defaulting to 500ms\n", debounceDuration)
+		parsedDebounce = 500 * time.Millisecond
+	}
+
+	// Create the fsnotify-based watcher.
+	cfg := watch.Config{
+		Debounce:       parsedDebounce,
+		IgnorePatterns: ignoreMods,
+	}
+	watcher, err := watch.New(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to create watcher: %w", err)
+	}
+	defer watcher.Close()
+
+	// Add all selected project directories to the watcher.
+	for _, p := range projects {
+		if err := watcher.AddDir(p.AbsPath); err != nil {
+			fmt.Printf("[SDLC] Warning: failed to watch %s: %v\n", p.AbsPath, err)
+		}
+	}
+
+	fmt.Printf("[SDLC] Watch mode enabled. Watching for changes...\n")
 
 	type projectState struct {
 		cancel  context.CancelFunc
@@ -330,9 +355,7 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 		startProject(p)
 	}
 
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
+	// Main watch loop using fsnotify events instead of polling.
 	for {
 		select {
 		case <-ctx.Done():
@@ -362,26 +385,13 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 			}
 			return nil
 
-		case <-ticker.C:
-			// Check for changes
+		case changedPath := <-watcher.Changes():
+			// Find which project the changed file belongs to and restart it.
 			for _, p := range projects {
-				mu.Lock()
-				s, ok := states[p.Path]
-				mu.Unlock()
-
-				if !ok {
-					continue
-				}
-
-				changed, changedFile, err := hasChanges(p.AbsPath, s.lastMod)
-				if err != nil {
-					fmt.Printf("[SDLC] Watch error in %s: %v\n", p.Path, err)
-					continue
-				}
-
-				if changed {
-					fmt.Printf("\n[SDLC] File change detected: %s in %s. Restarting module...\n", filepath.Base(changedFile), p.Path)
+				if strings.HasPrefix(changedPath, p.AbsPath) {
+					fmt.Printf("\n[SDLC] File change detected: %s in %s. Restarting module...\n", filepath.Base(changedPath), p.Path)
 					startProject(p)
+					break
 				}
 			}
 		}
@@ -463,49 +473,6 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 		return err
 	}
 	return nil
-}
-
-// hasChanges checks if any file in root has been modified since sinceTime
-func hasChanges(root string, sinceTime time.Time) (bool, string, error) {
-	var changed bool
-	var changedFile string
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			// Skip .git, .idea, etc.
-			if strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
-				return filepath.SkipDir
-			}
-			// Skip common build/dependency directories
-			if info.Name() == "node_modules" || info.Name() == "dist" || info.Name() == "build" || info.Name() == "target" || info.Name() == "bin" || info.Name() == "pkg" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		// Skip hidden files
-		if strings.HasPrefix(info.Name(), ".") {
-			return nil
-		}
-
-		// Skip log files and other temporary artifacts
-		if strings.HasSuffix(info.Name(), ".log") || strings.HasSuffix(info.Name(), ".tmp") || strings.HasSuffix(info.Name(), ".lock") || strings.HasSuffix(info.Name(), ".pid") || strings.HasSuffix(info.Name(), ".swp") {
-			return nil
-		}
-
-		if info.ModTime().After(sinceTime) {
-			changed = true
-			changedFile = path
-			return io.EOF // Stop walking
-		}
-		return nil
-	})
-
-	if err == io.EOF {
-		return true, changedFile, nil
-	}
-	return changed, "", err
 }
 
 // PrefixWriter wraps an io.Writer and prefixes each line with a given prefix

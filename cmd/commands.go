@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -22,6 +23,21 @@ import (
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 )
+
+// ExitCodeError wraps an error with a specific process exit code so that
+// the top-level Execute() function can exit with the child process's code.
+type ExitCodeError struct {
+	Code int
+	Err  error
+}
+
+func (e *ExitCodeError) Error() string {
+	return e.Err.Error()
+}
+
+func (e *ExitCodeError) Unwrap() error {
+	return e.Err
+}
 
 func init() {
 	RootCmd.AddCommand(runCmd)
@@ -135,15 +151,6 @@ func runTask(ctx context.Context, wd, action string) error {
 		return fmt.Errorf("no projects matched the criteria")
 	}
 
-	// Interactive selection if multiple projects found and no specific flags were set
-	if len(selectedProjects) > 1 && !runAllMods && targetMod == "" && len(ignoreMods) == 0 {
-		// This is the case where we want to prompt
-		selectedProjects, err = promptModuleSelection(selectedProjects)
-		if err != nil {
-			return err
-		}
-	}
-
 	if len(projects) > 1 {
 		fmt.Printf("[SDLC] Multi-module project detected (%d modules):\n", len(projects))
 		for i, p := range projects {
@@ -220,6 +227,7 @@ func runTask(ctx context.Context, wd, action string) error {
 
 	// Execute for each selected project once
 	var wg sync.WaitGroup
+	errCh := make(chan error, len(selectedProjects))
 	for i, project := range selectedProjects {
 		wg.Add(1)
 
@@ -235,11 +243,38 @@ func runTask(ctx context.Context, wd, action string) error {
 		go func(p engine.Project, index int) {
 			defer wg.Done()
 			env, args := prepareProjectEnv(p, rootEnvConfig)
-			runProject(ctx, p, index, action, env, args, len(selectedProjects) > 1)
+			if err := runProject(ctx, p, index, action, env, args, len(selectedProjects) > 1); err != nil {
+				errCh <- err
+			}
 		}(project, originalIdx)
 	}
 
 	wg.Wait()
+	close(errCh)
+
+	// Collect errors from all modules
+	var errs []error
+	for err := range errCh {
+		errs = append(errs, err)
+	}
+
+	// For a single targeted module, propagate its exit code directly
+	if targetMod != "" && len(errs) > 0 {
+		var exitErr *ExitCodeError
+		if errors.As(errs[0], &exitErr) {
+			return exitErr
+		}
+		return errs[0]
+	}
+
+	// For multiple modules, report all failures
+	if len(errs) > 0 {
+		for _, e := range errs {
+			fmt.Fprintf(os.Stderr, "[SDLC] %v\n", e)
+		}
+		return fmt.Errorf("%d module(s) failed", len(errs))
+	}
+
 	return nil
 }
 
@@ -490,12 +525,18 @@ func (pw *PrefixWriter) Write(p []byte) (n int, err error) {
 }
 
 func filterProjects(projects []engine.Project) ([]engine.Project, error) {
-	// Handle ignore flags
-	if len(ignoreMods) > 0 {
-		if len(projects) <= 1 {
-			return nil, fmt.Errorf("--ignore flag is only supported in multi-module projects")
+	// Handle --module flag: select exactly one module by path or name
+	if targetMod != "" {
+		for _, p := range projects {
+			if p.Path == targetMod || p.Name == targetMod {
+				return []engine.Project{p}, nil
+			}
 		}
+		return nil, fmt.Errorf("module %q not found. Available modules:\n  %s", targetMod, strings.Join(projectPaths(projects), "\n  "))
+	}
 
+	// Handle --ignore flags: exclude matching modules
+	if len(ignoreMods) > 0 {
 		var filtered []engine.Project
 		for _, p := range projects {
 			ignored := false
@@ -512,28 +553,17 @@ func filterProjects(projects []engine.Project) ([]engine.Project, error) {
 		projects = filtered
 	}
 
-	if runAllMods {
-		return projects, nil
-	}
-
-	if targetMod != "" {
-		for _, p := range projects {
-			if p.Path == targetMod {
-				return []engine.Project{p}, nil
-			}
-		}
-		return []engine.Project{}, nil
-	}
-
-	// If only one project exists, default to it
-	if len(projects) == 1 {
-		return projects, nil
-	}
-
-	// Otherwise return empty list (caller will handle ambiguous case)
-	// Actually, returning all projects here and letting the caller decide
-	// based on count is better for the error message "multiple projects found"
+	// --all flag or default: return all remaining projects
 	return projects, nil
+}
+
+// projectPaths returns a slice of relative paths for display in error messages.
+func projectPaths(projects []engine.Project) []string {
+	paths := make([]string, len(projects))
+	for i, p := range projects {
+		paths[i] = p.Path
+	}
+	return paths
 }
 
 func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) {

@@ -418,9 +418,9 @@ func prepareProjectEnv(p engine.Project, rootEnvConfig *config.EnvSettings) (map
 
 	finalArgs := merged.Args
 
-	// Append extra args from CLI
-	if extraArgs != "" {
-		finalArgs = append(finalArgs, strings.Split(extraArgs, " ")...)
+	// Append extra args from CLI (repeatable flag, each value split on whitespace)
+	for _, ea := range extraArgs {
+		finalArgs = append(finalArgs, strings.Fields(ea)...)
 	}
 	return merged.Env, finalArgs
 }

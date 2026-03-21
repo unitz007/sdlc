@@ -271,9 +271,8 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 	defer fmt.Println("[SDLC] Exiting watchAndRunLoop")
 
 	type projectState struct {
-		cancel  context.CancelFunc
-		wg      *sync.WaitGroup
-		lastMod time.Time
+		cancel context.CancelFunc
+		wg     *sync.WaitGroup
 	}
 
 	states := make(map[string]*projectState)
@@ -299,9 +298,8 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 		wg.Add(1)
 
 		newState := &projectState{
-			cancel:  cancel,
-			wg:      wg,
-			lastMod: time.Now(),
+			cancel: cancel,
+			wg:     wg,
 		}
 		states[p.Path] = newState
 
@@ -325,13 +323,17 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 		}()
 	}
 
+	// Create fsnotify-based watcher with 500ms debounce
+	watcher, err := NewWatcher(projects, 500*time.Millisecond)
+	if err != nil {
+		return fmt.Errorf("failed to create watcher: %w", err)
+	}
+	defer watcher.Close()
+
 	// Initial start
 	for _, p := range projects {
 		startProject(p)
 	}
-
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
 
 	for {
 		select {
@@ -362,26 +364,17 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 			}
 			return nil
 
-		case <-ticker.C:
-			// Check for changes
+		case event, ok := <-watcher.Events():
+			if !ok {
+				// Watcher closed
+				return nil
+			}
+			// Find the project matching the event's ProjectPath and restart it
 			for _, p := range projects {
-				mu.Lock()
-				s, ok := states[p.Path]
-				mu.Unlock()
-
-				if !ok {
-					continue
-				}
-
-				changed, changedFile, err := hasChanges(p.AbsPath, s.lastMod)
-				if err != nil {
-					fmt.Printf("[SDLC] Watch error in %s: %v\n", p.Path, err)
-					continue
-				}
-
-				if changed {
-					fmt.Printf("\n[SDLC] File change detected: %s in %s. Restarting module...\n", filepath.Base(changedFile), p.Path)
+				if p.AbsPath == event.ProjectPath {
+					fmt.Printf("\n[SDLC] File change detected: %s in %s. Restarting module...\n", filepath.Base(event.FilePath), p.Path)
 					startProject(p)
+					break
 				}
 			}
 		}

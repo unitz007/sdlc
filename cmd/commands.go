@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -103,11 +104,21 @@ func executeTask(cmd *cobra.Command, action string) error {
 	return runTask(ctx, wd, action)
 }
 
-// moduleResult captures the execution outcome for a single module.
-type moduleResult struct {
-	project  engine.Project
-	exitCode int
-	err      error
+// parseParallelFlag converts the --parallel string flag to a concurrency limit.
+// Returns: 0 = unbounded concurrency, N = max N goroutines, -1 = sequential (default).
+func parseParallelFlag(raw string) int {
+	if raw == "" {
+		return -1 // sequential by default
+	}
+	// When used as a boolean flag (--parallel with no value), cobra sets it to "true"
+	if strings.EqualFold(raw, "true") {
+		return 0 // unbounded
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return -1 // invalid value, fall back to sequential
+	}
+	return n
 }
 
 func runTask(ctx context.Context, wd, action string) error {
@@ -238,56 +249,71 @@ func runTask(ctx context.Context, wd, action string) error {
 		return watchAndRunLoop(ctx, selectedProjects, projects, action, rootEnvConfig)
 	}
 
-	// Execute for each selected project once
+	// Parse the --parallel flag to determine execution mode
+	parallelLimit := parseParallelFlag(parallelStr)
+	multi := len(selectedProjects) > 1
+
+	// Execute for each selected project
 	summaryResults := make([]ModuleResult, len(selectedProjects))
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	results := make(chan moduleResult, len(selectedProjects))
-	for i, project := range selectedProjects {
-		wg.Add(1)
 
-		// Find the correct index in the original projects list for consistent coloring
-		originalIdx := i
-		for idx, p := range projects {
-			if p.Path == project.Path {
-				originalIdx = idx
-				break
-			}
-		}
-
-		go func(p engine.Project, index int, slot int) {
-			defer wg.Done()
-			env, args := prepareProjectEnv(p, rootEnvConfig)
-			cmdStr, _ := resolveCommandString(p, action, env, args)
-			err := runProject(ctx, p, index, action, env, args, len(selectedProjects) > 1)
-			mu.Lock()
-			summaryResults[slot] = ModuleResult{
-				Path:       p.Path,
-				Command:    cmdStr,
-				Err:        err,
-				ColorIndex: index,
-			}
-			mu.Unlock()
-			code := 0
-			if err != nil {
-				var exitErr *ExitCodeError
-				if errors.As(err, &exitErr) {
-					code = exitErr.Code
-				} else {
-					code = 1
+	if parallelLimit == -1 {
+		// Sequential execution (default when --parallel is not set)
+		for i, project := range selectedProjects {
+			originalIdx := i
+			for idx, p := range projects {
+				if p.Path == project.Path {
+					originalIdx = idx
+					break
 				}
 			}
-			results <- moduleResult{project: p, exitCode: code, err: err}
-		}(project, originalIdx, i)
-	}
 
-	wg.Wait()
-	close(results)
+			env, args := prepareProjectEnv(project, rootEnvConfig)
+			cmdStr, _ := resolveCommandString(project, action, env, args)
+			err := runProject(ctx, project, originalIdx, action, env, args, multi)
+			summaryResults[i] = ModuleResult{
+				Path:       project.Path,
+				Command:    cmdStr,
+				Err:        err,
+				ColorIndex: originalIdx,
+			}
+		}
+	} else {
+		// Parallel execution with optional concurrency limit
+		var wg sync.WaitGroup
+		var sem chan struct{}
+		if parallelLimit > 0 {
+			sem = make(chan struct{}, parallelLimit)
+		}
 
-	// Collect results from all modules
-	var allResults []moduleResult
-	for r := range results {
-		allResults = append(allResults, r)
+		for i, project := range selectedProjects {
+			originalIdx := i
+			for idx, p := range projects {
+				if p.Path == project.Path {
+					originalIdx = idx
+					break
+				}
+			}
+
+			wg.Add(1)
+			go func(p engine.Project, index int, slot int) {
+				defer wg.Done()
+				if sem != nil {
+					sem <- struct{}{}
+					defer func() { <-sem }()
+				}
+				env, args := prepareProjectEnv(p, rootEnvConfig)
+				cmdStr, _ := resolveCommandString(p, action, env, args)
+				err := runProject(ctx, p, index, action, env, args, multi)
+				summaryResults[slot] = ModuleResult{
+					Path:       p.Path,
+					Command:    cmdStr,
+					Err:        err,
+					ColorIndex: index,
+				}
+			}(project, originalIdx, i)
+		}
+
+		wg.Wait()
 	}
 
 	// Print summary table when two or more modules were executed
@@ -306,11 +332,20 @@ func runTask(ctx context.Context, wd, action string) error {
 		printSummaryTable(summaryResults, w)
 	}
 
-	// Identify failed modules
+	// Identify failed modules and determine overall exit code
 	var failedModules []string
-	for _, r := range allResults {
-		if r.exitCode != 0 {
-			failedModules = append(failedModules, r.project.Path)
+	var firstFailureCode int
+	for _, r := range summaryResults {
+		if r.Err != nil {
+			failedModules = append(failedModules, r.Path)
+			if firstFailureCode == 0 {
+				var exitErr *ExitCodeError
+				if errors.As(r.Err, &exitErr) {
+					firstFailureCode = exitErr.Code
+				} else {
+					firstFailureCode = 1
+				}
+			}
 		}
 	}
 
@@ -320,12 +355,7 @@ func runTask(ctx context.Context, wd, action string) error {
 		if len(failedModules) == 1 {
 			// Preserve the specific exit code from the single failed module
 			// so CI/CD pipelines see the real failure code (e.g., 42 not 1).
-			for _, r := range allResults {
-				if r.exitCode != 0 {
-					code = r.exitCode
-					break
-				}
-			}
+			code = firstFailureCode
 		}
 		return &ExitCodeError{Code: code, Err: fmt.Errorf("%d module(s) failed", len(failedModules))}
 	}

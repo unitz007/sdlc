@@ -1,4 +1,6 @@
 sdlc
+sdlc_new
 sdlc_test
 sdlc_test_binary
 *.test_binary
+*.exe

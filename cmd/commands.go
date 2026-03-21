@@ -238,6 +238,8 @@ func runTask(ctx context.Context, wd, action string) error {
 	}
 
 	// Execute for each selected project once
+	summaryResults := make([]ModuleResult, len(selectedProjects))
+	var mu sync.Mutex
 	var wg sync.WaitGroup
 	results := make(chan moduleResult, len(selectedProjects))
 	for i, project := range selectedProjects {
@@ -252,10 +254,19 @@ func runTask(ctx context.Context, wd, action string) error {
 			}
 		}
 
-		go func(p engine.Project, index int) {
+		go func(p engine.Project, index int, slot int) {
 			defer wg.Done()
 			env, args := prepareProjectEnv(p, rootEnvConfig)
+			cmdStr, _ := resolveCommandString(p, action, env, args)
 			err := runProject(ctx, p, index, action, env, args, len(selectedProjects) > 1)
+			mu.Lock()
+			summaryResults[slot] = ModuleResult{
+				Path:       p.Path,
+				Command:    cmdStr,
+				Err:        err,
+				ColorIndex: index,
+			}
+			mu.Unlock()
 			code := 0
 			if err != nil {
 				var exitErr *ExitCodeError
@@ -266,7 +277,7 @@ func runTask(ctx context.Context, wd, action string) error {
 				}
 			}
 			results <- moduleResult{project: p, exitCode: code, err: err}
-		}(project, originalIdx)
+		}(project, originalIdx, i)
 	}
 
 	wg.Wait()
@@ -276,6 +287,22 @@ func runTask(ctx context.Context, wd, action string) error {
 	var allResults []moduleResult
 	for r := range results {
 		allResults = append(allResults, r)
+	}
+
+	// Print summary table when two or more modules were executed
+	if len(summaryResults) >= 2 {
+		hasFailure := false
+		for _, r := range summaryResults {
+			if r.Err != nil {
+				hasFailure = true
+				break
+			}
+		}
+		w := io.Writer(os.Stdout)
+		if hasFailure {
+			w = os.Stderr
+		}
+		printSummaryTable(summaryResults, w)
 	}
 
 	// Identify failed modules
@@ -452,6 +479,38 @@ func prepareProjectEnv(p engine.Project, rootEnvConfig *config.EnvSettings) (map
 	return merged.Env, finalArgs
 }
 
+// resolveCommandString builds the full command string for a project/action by
+// resolving the base command, appending extra args, and substituting
+// environment variables (longest keys first to avoid partial matches).
+func resolveCommandString(p engine.Project, action string, env map[string]string, args []string) (string, error) {
+	cmdStr, err := p.Task.Command(action)
+	if err != nil {
+		return "", err
+	}
+
+	cmdArgsStr := strings.Join(args, " ")
+	if cmdArgsStr != "" {
+		cmdStr += " " + cmdArgsStr
+	}
+
+	// Substitute environment variables in the command string
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return len(keys[i]) > len(keys[j])
+	})
+
+	for _, k := range keys {
+		v := env[k]
+		cmdStr = strings.ReplaceAll(cmdStr, fmt.Sprintf("${%s}", k), v)
+		cmdStr = strings.ReplaceAll(cmdStr, fmt.Sprintf("$%s", k), v)
+	}
+
+	return cmdStr, nil
+}
+
 func runProject(ctx context.Context, p engine.Project, index int, action string, env map[string]string, args []string, multi bool) error {
 	// Clean up .vite-temp if it exists, to prevent EPERM errors on restart
 	viteTemp := filepath.Join(p.AbsPath, "node_modules", ".vite-temp")
@@ -476,33 +535,11 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 		fmt.Printf("[SDLC] Executing %s for module: %s\n", action, p.Path)
 	}
 
-	// Construct command arguments string
-	cmdArgsStr := strings.Join(args, " ")
-
-	// Execute command
-	cmdStr, err := p.Task.Command(action)
+	// Resolve the full command string (base command + args + env substitution)
+	cmdStr, err := resolveCommandString(p, action, env, args)
 	if err != nil {
 		fmt.Fprintf(errOut, "Error getting command: %v\n", err)
 		return err
-	}
-
-	if cmdArgsStr != "" {
-		cmdStr += " " + cmdArgsStr
-	}
-
-	// Substitute environment variables in the command string
-	keys := make([]string, 0, len(env))
-	for k := range env {
-		keys = append(keys, k)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		return len(keys[i]) > len(keys[j])
-	})
-
-	for _, k := range keys {
-		v := env[k]
-		cmdStr = strings.ReplaceAll(cmdStr, fmt.Sprintf("${%s}", k), v)
-		cmdStr = strings.ReplaceAll(cmdStr, fmt.Sprintf("$%s", k), v)
 	}
 
 	if verbose {

@@ -108,8 +108,13 @@ func runTask(ctx context.Context, wd, action string) error {
 	var err error
 
 	if cfgFile != "" {
-		tasks, err = config.Load(cfgFile)
-	} else {
+		tasks, err = config.LoadFromDir(cfgFile)
+		if err != nil {
+			return fmt.Errorf("config error: %w", err)
+		}
+	}
+
+	if tasks == nil {
 		// Try loading from working directory first
 		tasks, err = config.LoadLocal(wd)
 		if err != nil {

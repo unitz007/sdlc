@@ -32,8 +32,17 @@ var RootCmd = &cobra.Command{
 	Long: `SDLC is a lightweight CLI tool that provides a unified interface 
 for common software development lifecycle commands — run, test, and build — 
 across different project types.`,
-	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		lib.InitColor(noColor)
+
+		resolved, err := resolveConfigDir(cfgFile)
+		if err != nil {
+			fmt.Fprintln(cmd.ErrOrStderr(), err)
+			return err
+		}
+		cfgFile = resolved
+
+		return nil
 	},
 }
 
@@ -87,4 +96,43 @@ func resolveWorkDir(dirFlag string) (string, error) {
 	}
 
 	return wd, nil
+}
+
+// resolveConfigDir resolves and validates the --config directory path.
+// It returns "" immediately if raw is empty (no custom config specified).
+// Otherwise it expands ~/ to the home directory, resolves to an absolute path,
+// and validates that the path exists and is a directory.
+func resolveConfigDir(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+
+	dir := raw
+
+	if strings.HasPrefix(dir, "~/") {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		dir = strings.ReplaceAll(dir, "~", homeDir)
+	}
+
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve config directory: %w", err)
+	}
+
+	info, err := os.Stat(abs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("config directory does not exist: %s", abs)
+		}
+		return "", fmt.Errorf("failed to access config directory: %w", err)
+	}
+
+	if !info.IsDir() {
+		return "", fmt.Errorf("config directory does not exist: %s", abs)
+	}
+
+	return abs, nil
 }

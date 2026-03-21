@@ -24,6 +24,7 @@ var (
 	dryRun           bool
 	verbose          bool
 	noColor          bool
+	parallelStr      string
 )
 
 // RootCmd represents the base command when called without any subcommands
@@ -76,6 +77,7 @@ func init() {
 	RootCmd.PersistentFlags().BoolVarP(&dryRun, "dry-run", "n", false, "Show what would happen without executing commands (dry run)")
 	RootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Show resolved commands and environment variables before execution")
 	RootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
+	RootCmd.PersistentFlags().StringVarP(&parallelStr, "parallel", "p", "", "Run modules concurrently (e.g., -p, -p 4 for max concurrency)")
 }
 
 // resolveWorkDir handles the directory resolution logic including tilde expansion

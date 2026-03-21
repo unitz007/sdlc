@@ -140,20 +140,14 @@ func (w *Watcher) eventLoop() {
 				info, err := os.Stat(e.Name)
 				if err == nil && info.IsDir() {
 					if !shouldIgnoreDir(info.Name()) {
-						_ = addDirRecursive(w.fsWatcher, e.Name, e.Name, w.projectRoots)
-						// Also try to map this new dir to an existing project root
-						dir := e.Name
-						for {
-							parent := filepath.Dir(dir)
-							if parent == dir {
-								break
-							}
-							if root, ok := w.projectRoots[parent]; ok {
-								w.projectRoots[e.Name] = root
-								break
-							}
-							dir = parent
+						// Resolve the correct project root before adding the
+						// directory tree so that all subdirectories inherit the
+						// right mapping instead of pointing at the new dir.
+						root := w.resolveProject(filepath.Dir(e.Name))
+						if root == "" {
+							root = e.Name
 						}
+						_ = addDirRecursive(w.fsWatcher, e.Name, root, w.projectRoots)
 					}
 					continue
 				}

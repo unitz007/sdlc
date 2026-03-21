@@ -24,7 +24,26 @@ var (
 	dryRun           bool
 	verbose          bool
 	noColor          bool
+	parallelFlag     parallelValue
 )
+
+// parallelValue is a custom pflag.Value that allows --parallel to be used
+// without a value (treated as "true" = unbounded concurrency) or with a
+// numeric value (e.g., --parallel=4 or -p 4).
+type parallelValue struct {
+	raw string
+}
+
+func (p *parallelValue) String() string { return p.raw }
+func (p *parallelValue) Set(s string) error {
+	p.raw = s
+	return nil
+}
+func (p *parallelValue) Type() string { return "string" }
+
+// NoOptDefValue implements the pflag NoOptDefVal interface so that bare --parallel/-p
+// (without a value) is accepted and treated as unbounded concurrency.
+func (p *parallelValue) NoOptDefValue() string { return "true" }
 
 // RootCmd represents the base command when called without any subcommands
 var RootCmd = &cobra.Command{
@@ -76,6 +95,7 @@ func init() {
 	RootCmd.PersistentFlags().BoolVarP(&dryRun, "dry-run", "n", false, "Show what would happen without executing commands (dry run)")
 	RootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Show resolved commands and environment variables before execution")
 	RootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
+	RootCmd.PersistentFlags().VarP(&parallelFlag, "parallel", "p", "Run modules concurrently (e.g., -p, -p 4)")
 }
 
 // resolveWorkDir handles the directory resolution logic including tilde expansion

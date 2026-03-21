@@ -19,7 +19,7 @@ import (
 	"sdlc/config"
 	"sdlc/engine"
 	"sdlc/lib"
-	"sdlc/watch"
+	"sdlc/watcher"
 
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
@@ -379,60 +379,33 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 		parsedDebounce = 500 * time.Millisecond
 	}
 
-	// Create the fsnotify-based watcher.
-	cfg := watch.Config{
-		Debounce:       parsedDebounce,
-		IgnorePatterns: ignoreMods,
-	}
-	watcher, err := watch.New(cfg)
-	if err != nil {
-		return fmt.Errorf("failed to create watcher: %w", err)
-	}
-	defer watcher.Close()
-
-	// Add all selected project directories to the watcher.
-	for _, p := range projects {
-		if err := watcher.AddDir(p.AbsPath); err != nil {
-			fmt.Printf("[SDLC] Warning: failed to watch %s: %v\n", p.AbsPath, err)
-		}
-	}
-
-	fmt.Printf("[SDLC] Watch mode enabled. Watching for changes...\n")
-
 	type projectState struct {
-		cancel  context.CancelFunc
-		wg      *sync.WaitGroup
-		lastMod time.Time
+		cancel context.CancelFunc
+		wg     *sync.WaitGroup
 	}
 
 	states := make(map[string]*projectState)
 	var mu sync.Mutex
 
-	// Helper to start (or restart) a project
+	// Helper to start (or restart) a project.
 	startProject := func(p engine.Project) {
 		mu.Lock()
 		defer mu.Unlock()
 
 		state, exists := states[p.Path]
 		if exists {
-			// Stop existing
 			state.cancel()
 			state.wg.Wait()
-			// Add a small delay to ensure file handles are released
-			time.Sleep(500 * time.Millisecond)
 		}
 
-		// New context
 		runCtx, cancel := context.WithCancel(ctx)
 		wg := &sync.WaitGroup{}
 		wg.Add(1)
 
-		newState := &projectState{
-			cancel:  cancel,
-			wg:      wg,
-			lastMod: time.Now(),
+		states[p.Path] = &projectState{
+			cancel: cancel,
+			wg:     wg,
 		}
-		states[p.Path] = newState
 
 		// Find original index for coloring
 		idx := 0
@@ -446,7 +419,6 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 		go func() {
 			defer wg.Done()
 			env, args := prepareProjectEnv(p, rootEnvConfig)
-			// Pass a derived context that handles cancellation properly
 			err := runProject(runCtx, p, idx, action, env, args, len(projects) > 1)
 			if err != nil && err != context.Canceled {
 				fmt.Printf("[SDLC] Module %s exited with error: %v\n", p.Name, err)
@@ -454,52 +426,120 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 		}()
 	}
 
-	// Initial start
+	// Build a lookup from project relative path → engine.Project for the callback.
+	projectMap := make(map[string]engine.Project, len(projects))
+	for _, p := range projects {
+		projectMap[p.Path] = p
+	}
+
+	// Create the fsnotify-based watcher with per-project debouncing.
+	w, err := watcher.NewWatcher(parsedDebounce, func(event watcher.ChangeEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		p, ok := projectMap[event.ProjectPath]
+		if !ok {
+			return
+		}
+
+		// Cancel the existing run for this project and wait for it to finish.
+		if state, exists := states[p.Path]; exists {
+			state.cancel()
+			state.wg.Wait()
+		}
+
+		color := lib.ModuleColor(0)
+		for i, original := range allProjects {
+			if original.Path == p.Path {
+				color = lib.ModuleColor(i)
+				break
+			}
+		}
+
+		fmt.Printf("\n[SDLC] %sFile change detected: %s — restarting %s%s%s...\n",
+			lib.Colorize("", lib.Yellow),
+			filepath.Base(event.FilePath),
+			lib.Colorize(p.Path, color),
+			lib.Colorize("", lib.Reset),
+			lib.Colorize("", lib.Reset),
+		)
+
+		// Start a fresh run for this project.
+		runCtx, cancel := context.WithCancel(ctx)
+		wg := &sync.WaitGroup{}
+		wg.Add(1)
+
+		states[p.Path] = &projectState{
+			cancel: cancel,
+			wg:     wg,
+		}
+
+		idx := 0
+		for i, original := range allProjects {
+			if original.Path == p.Path {
+				idx = i
+				break
+			}
+		}
+
+		go func() {
+			defer wg.Done()
+			env, args := prepareProjectEnv(p, rootEnvConfig)
+			err := runProject(runCtx, p, idx, action, env, args, len(projects) > 1)
+			if err != nil && err != context.Canceled {
+				fmt.Printf("[SDLC] Module %s exited with error: %v\n", p.Name, err)
+			}
+		}()
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create watcher: %w", err)
+	}
+	defer w.Close()
+
+	// Add all selected projects to the watcher.
+	for _, p := range projects {
+		if err := w.AddProject(p.Path, p.AbsPath); err != nil {
+			fmt.Printf("[SDLC] Warning: failed to watch %s: %v\n", p.AbsPath, err)
+		}
+	}
+
+	// Initial start of all projects.
 	for _, p := range projects {
 		startProject(p)
 	}
 
-	// Main watch loop using fsnotify events instead of polling.
-	for {
-		select {
-		case <-ctx.Done():
-			fmt.Println("[SDLC] Context cancelled, exiting watch loop")
-			mu.Lock()
-			for _, s := range states {
-				s.cancel()
-			}
-			mu.Unlock()
-
-			// Wait for all goroutines to finish with a timeout
-			done := make(chan struct{})
-			go func() {
-				mu.Lock()
-				defer mu.Unlock()
-				for _, s := range states {
-					s.wg.Wait()
-				}
-				close(done)
-			}()
-
-			select {
-			case <-done:
-				fmt.Println("[SDLC] All modules stopped gracefully")
-			case <-time.After(5 * time.Second):
-				fmt.Println("[SDLC] Timeout waiting for modules to stop")
-			}
-			return nil
-
-		case changedPath := <-watcher.Changes():
-			// Find which project the changed file belongs to and restart it.
-			for _, p := range projects {
-				if strings.HasPrefix(changedPath, p.AbsPath) {
-					fmt.Printf("\n[SDLC] File change detected: %s in %s. Restarting module...\n", filepath.Base(changedPath), p.Path)
-					startProject(p)
-					break
-				}
-			}
-		}
+	// Block until the parent context is cancelled (e.g. Ctrl+C).
+	if err := w.Watch(ctx); err != nil {
+		return err
 	}
+
+	// Context cancelled — shut down all running projects.
+	fmt.Println("[SDLC] Context cancelled, exiting watch loop")
+	mu.Lock()
+	for _, s := range states {
+		s.cancel()
+	}
+	mu.Unlock()
+
+	// Wait for all goroutines to finish with a timeout.
+	done := make(chan struct{})
+	go func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, s := range states {
+			s.wg.Wait()
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		fmt.Println("[SDLC] All modules stopped gracefully")
+	case <-time.After(5 * time.Second):
+		fmt.Println("[SDLC] Timeout waiting for modules to stop")
+	}
+
+	return nil
 }
 
 func prepareProjectEnv(p engine.Project, rootEnvConfig *config.EnvSettings) (map[string]string, []string) {

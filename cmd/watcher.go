@@ -87,7 +87,7 @@ func addDirRecursive(w *fsnotify.Watcher, dir string, projectRoot string, projec
 }
 
 // shouldIgnoreDir returns true if the directory should be excluded from watching.
-// Matches the skip logic in hasChanges (cmd/commands.go lines 489-494).
+// Skips hidden directories and common build/dependency directories.
 func shouldIgnoreDir(name string) bool {
 	if strings.HasPrefix(name, ".") && name != "." {
 		return true
@@ -100,7 +100,7 @@ func shouldIgnoreDir(name string) bool {
 }
 
 // shouldIgnoreFile returns true if the file should be excluded from change events.
-// Matches the skip logic in hasChanges (cmd/commands.go lines 500-506).
+// Skips hidden files and temporary artifacts.
 func shouldIgnoreFile(name string) bool {
 	if strings.HasPrefix(name, ".") {
 		return true

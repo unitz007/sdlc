@@ -470,49 +470,6 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 	return nil
 }
 
-// hasChanges checks if any file in root has been modified since sinceTime
-func hasChanges(root string, sinceTime time.Time) (bool, string, error) {
-	var changed bool
-	var changedFile string
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			// Skip .git, .idea, etc.
-			if strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
-				return filepath.SkipDir
-			}
-			// Skip common build/dependency directories
-			if info.Name() == "node_modules" || info.Name() == "dist" || info.Name() == "build" || info.Name() == "target" || info.Name() == "bin" || info.Name() == "pkg" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		// Skip hidden files
-		if strings.HasPrefix(info.Name(), ".") {
-			return nil
-		}
-
-		// Skip log files and other temporary artifacts
-		if strings.HasSuffix(info.Name(), ".log") || strings.HasSuffix(info.Name(), ".tmp") || strings.HasSuffix(info.Name(), ".lock") || strings.HasSuffix(info.Name(), ".pid") || strings.HasSuffix(info.Name(), ".swp") {
-			return nil
-		}
-
-		if info.ModTime().After(sinceTime) {
-			changed = true
-			changedFile = path
-			return io.EOF // Stop walking
-		}
-		return nil
-	})
-
-	if err == io.EOF {
-		return true, changedFile, nil
-	}
-	return changed, "", err
-}
-
 // PrefixWriter wraps an io.Writer and prefixes each line with a given prefix
 type PrefixWriter struct {
 	w       io.Writer

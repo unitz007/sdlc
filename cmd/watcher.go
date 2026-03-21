@@ -29,6 +29,7 @@ type Watcher struct {
 	done             chan struct{}
 	loopDone         chan struct{} // closed when eventLoop goroutine exits
 	mu               sync.Mutex   // protects debouncers map
+	timerWG          sync.WaitGroup
 }
 
 // NewWatcher creates a Watcher that recursively monitors all directories within
@@ -170,7 +171,9 @@ func (w *Watcher) eventLoop() {
 			if existing, ok := w.debouncers[projectPath]; ok {
 				existing.Stop()
 			}
+			w.timerWG.Add(1)
 			w.debouncers[projectPath] = time.AfterFunc(w.debounceInterval, func() {
+				defer w.timerWG.Done()
 				w.events <- FileChangeEvent{
 					ProjectPath: projectPath,
 					FilePath:    e.Name,
@@ -219,5 +222,8 @@ func (w *Watcher) Close() {
 		t.Stop()
 	}
 	w.mu.Unlock()
+	// Wait for any in-flight timer callbacks that already fired to finish
+	// sending on the events channel before we close it.
+	w.timerWG.Wait()
 	close(w.events)
 }

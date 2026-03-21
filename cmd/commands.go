@@ -23,30 +23,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const (
-	colorReset    = "\033[0m"
-	colorRed      = "\033[31m"
-	colorGreen    = "\033[32m"
-	colorYellow   = "\033[33m"
-	colorBlue     = "\033[34m"
-	colorMagenta  = "\033[35m"
-	colorCyan     = "\033[36m"
-	colorWhite    = "\033[37m"
-	colorDarkGrey = "\033[90m"
-)
-
-var moduleColors = []string{
-	colorCyan,
-	colorGreen,
-	colorMagenta,
-	colorYellow,
-	colorBlue,
-}
-
-func getModuleColor(index int) string {
-	return moduleColors[index%len(moduleColors)]
-}
-
 func init() {
 	RootCmd.AddCommand(runCmd)
 	RootCmd.AddCommand(testCmd)
@@ -181,10 +157,10 @@ func runTask(ctx context.Context, wd, action string) error {
 			}
 
 			if !isSelected {
-				fmt.Printf(" %s✘ %s (%s) [IGNORED]%s\n", colorDarkGrey, p.Path, p.Name, colorReset)
+				fmt.Printf(" %s✘ %s (%s) [IGNORED]%s\n", lib.Colorize("", lib.DarkGrey), p.Path, p.Name, lib.Colorize("", lib.Reset))
 			} else {
-				color := getModuleColor(i)
-				fmt.Printf(" %s✔%s %s%s%s (%s)\n", colorGreen, colorReset, color, p.Path, colorReset, p.Name)
+				color := lib.ModuleColor(i)
+				fmt.Printf(" %s✔%s %s (%s)\n", lib.Colorize("", lib.Green), lib.Colorize("", lib.Reset), lib.Colorize(p.Path, color), p.Name)
 			}
 		}
 		fmt.Println()
@@ -222,8 +198,8 @@ func runTask(ctx context.Context, wd, action string) error {
 				cmdStr = strings.ReplaceAll(cmdStr, fmt.Sprintf("$%s", k), v)
 			}
 
-			color := getModuleColor(i)
-			prefix := fmt.Sprintf("[%s%s%s] ", color, p.Path, colorReset)
+			color := lib.ModuleColor(i)
+			prefix := fmt.Sprintf("[%s] ", lib.Colorize(p.Path, color))
 			fmt.Printf(" - %s%s\n", prefix, cmdStr)
 		}
 		// Do not perform any actions in dry-run mode
@@ -425,8 +401,8 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	color := getModuleColor(index)
-	prefix := fmt.Sprintf("[%s%s%s] ", color, p.Path, colorReset)
+	color := lib.ModuleColor(index)
+	prefix := fmt.Sprintf("[%s] ", lib.Colorize(p.Path, color))
 	var out, errOut io.Writer
 
 	if multi {
@@ -435,7 +411,7 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 	} else {
 		out = os.Stdout
 		errOut = os.Stderr
-		fmt.Printf("[SDLC] Executing %s for module: %s%s%s\n", action, color, p.Path, colorReset)
+		fmt.Printf("[SDLC] Executing %s for module: %s\n", action, p.Path)
 	}
 
 	// Construct command arguments string
@@ -677,5 +653,5 @@ func printBanner() {
  ___/ / /_/ / /___/ /___   
 /____/_____/_____/\____/   
 `
-	fmt.Println(colorCyan + banner + colorReset)
+	fmt.Println(lib.Colorize(banner, lib.Cyan))
 }

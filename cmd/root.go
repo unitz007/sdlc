@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"sdlc/lib"
 )
 
 var (
@@ -18,6 +20,7 @@ var (
 	watchMode        bool
 	debounceDuration string
 	dryRun           bool
+	noColor          bool
 )
 
 // RootCmd represents the base command when called without any subcommands
@@ -27,6 +30,9 @@ var RootCmd = &cobra.Command{
 	Long: `SDLC is a lightweight CLI tool that provides a unified interface 
 for common software development lifecycle commands — run, test, and build — 
 across different project types.`,
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		lib.InitColor(noColor)
+	},
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
@@ -48,6 +54,7 @@ func init() {
 	RootCmd.PersistentFlags().BoolVarP(&watchMode, "watch", "w", false, "Watch for file changes and restart")
 	RootCmd.PersistentFlags().StringVar(&debounceDuration, "debounce", "500ms", "Debounce window for watch mode (e.g. 500ms, 1s)")
 	RootCmd.PersistentFlags().BoolVarP(&dryRun, "dry-run", "n", false, "Show what would happen without executing commands (dry run)")
+	RootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 }
 
 // resolveWorkDir handles the directory resolution logic including tilde expansion

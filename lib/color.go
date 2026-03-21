@@ -3,7 +3,8 @@ package lib
 import (
 	"os"
 	"sync/atomic"
-	"syscall"
+
+	"golang.org/x/term"
 )
 
 // ANSI color escape sequences.
@@ -39,7 +40,7 @@ func InitColor(forceDisable bool) {
 		colorEnabled.Store(false)
 		return
 	}
-	colorEnabled.Store(isTerminal(int(os.Stdout.Fd())))
+	colorEnabled.Store(term.IsTerminal(int(os.Stdout.Fd())))
 }
 
 // ModuleColor returns the ANSI color code for the module at the given index.
@@ -58,11 +59,4 @@ func Colorize(text, colorCode string) string {
 		return text
 	}
 	return colorCode + text + Reset
-}
-
-// isTerminal returns true if the file descriptor refers to a terminal.
-func isTerminal(fd int) bool {
-	var st syscall.Stat_t
-	err := syscall.Fstat(fd, &st)
-	return err == nil && (st.Mode&syscall.S_IFMT) == syscall.S_IFCHR
 }

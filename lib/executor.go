@@ -89,7 +89,11 @@ func (e *Executor) Execute() error {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
-				e.exitCode = status.ExitStatus()
+				if status.Signaled() {
+					e.exitCode = -int(status.Signal())
+				} else {
+					e.exitCode = status.ExitStatus()
+				}
 			} else {
 				e.exitCode = 1
 			}

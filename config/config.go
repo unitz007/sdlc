@@ -21,15 +21,15 @@ type EnvSettings struct {
 	Args []string
 }
 
-// LoadEnvConfig reads the .sdlc.conf file from the given directory.
-// It parses lines starting with '$' as environment variables and '-' as flags.
-func LoadEnvConfig(dir string) (*EnvSettings, error) {
-	configPath := filepath.Join(dir, envConfigName)
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		return nil, nil
-	}
-
-	file, err := os.Open(configPath)
+// ParseEnvConfig reads and parses a .sdlc.conf file at the given explicit path.
+// Plain KEY=VALUE lines become environment variables.
+// FLAG=value lines become extra flags (the value after FLAG= is appended to args).
+// Lines with = but empty value (e.g., KEY=) store an empty string.
+// Lines with no = at all are silently skipped.
+// Lines starting with # and blank lines are ignored.
+// Surrounding quotes on values are stripped.
+func ParseEnvConfig(filePath string) (*EnvSettings, error) {
+	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open env config: %w", err)
 	}
@@ -47,32 +47,26 @@ func LoadEnvConfig(dir string) (*EnvSettings, error) {
 			continue
 		}
 
-		if strings.HasPrefix(line, "$") {
-			// Environment variable: $KEY=VALUE
-			parts := strings.SplitN(line[1:], "=", 2)
-			if len(parts) == 2 {
-				key := strings.TrimSpace(parts[0])
-				value := strings.TrimSpace(parts[1])
-				// Remove surrounding quotes if present
-				if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'')) {
-					value = value[1 : len(value)-1]
-				}
-				config.Env[key] = value
-			}
-		} else if strings.HasPrefix(line, "-") {
-			// Flag: --flag=value or -f=value
-			// Check for value assignment
-			if idx := strings.Index(line, "="); idx != -1 {
-				key := line[:idx]
-				value := line[idx+1:]
-				// Remove surrounding quotes from value
-				if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'')) {
-					value = value[1 : len(value)-1]
-				}
-				config.Args = append(config.Args, key+"="+value)
-			} else {
-				config.Args = append(config.Args, line)
-			}
+		// Lines without '=' are silently skipped
+		eqIdx := strings.Index(line, "=")
+		if eqIdx == -1 {
+			continue
+		}
+
+		key := strings.TrimSpace(line[:eqIdx])
+		value := strings.TrimSpace(line[eqIdx+1:])
+
+		// Remove surrounding quotes if present
+		if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'')) {
+			value = value[1 : len(value)-1]
+		}
+
+		// FLAG=value lines become extra flags
+		if strings.HasPrefix(key, "-") {
+			config.Args = append(config.Args, key+"="+value)
+		} else {
+			// Plain KEY=VALUE lines become environment variables
+			config.Env[key] = value
 		}
 	}
 
@@ -81,6 +75,42 @@ func LoadEnvConfig(dir string) (*EnvSettings, error) {
 	}
 
 	return config, nil
+}
+
+// LoadEnvConfig reads the .sdlc.conf file from the given directory.
+// It returns nil if the file does not exist.
+func LoadEnvConfig(dir string) (*EnvSettings, error) {
+	configPath := filepath.Join(dir, envConfigName)
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		return nil, nil
+	}
+	return ParseEnvConfig(configPath)
+}
+
+// MergeEnvSettings returns a new EnvSettings where env vars from override replace
+// those from base (map merge), and args from override are appended after base args
+// (slice concat). Nil inputs are treated as empty.
+func MergeEnvSettings(base, override *EnvSettings) *EnvSettings {
+	result := &EnvSettings{
+		Env:  make(map[string]string),
+		Args: make([]string, 0),
+	}
+
+	if base != nil {
+		for k, v := range base.Env {
+			result.Env[k] = v
+		}
+		result.Args = append(result.Args, base.Args...)
+	}
+
+	if override != nil {
+		for k, v := range override.Env {
+			result.Env[k] = v
+		}
+		result.Args = append(result.Args, override.Args...)
+	}
+
+	return result
 }
 
 // Load reads the .sdlc.json configuration file from the given directory path.

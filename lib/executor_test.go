@@ -115,10 +115,10 @@ func TestExecute_ExitCode_SignalDeath(t *testing.T) {
 		t.Fatal("Execute() expected error for signal-killed process, got nil")
 	}
 	code := executor.ExitCode()
-	// On Unix, a process killed by signal 9 (SIGKILL) reports -9 via WaitStatus
-	// (negative on macOS, also negative on Linux).
-	if code >= 0 {
-		t.Errorf("ExitCode() = %d, want negative (signal convention) for signal-killed process", code)
+	// On Unix, a process killed by signal 9 (SIGKILL) is conventionally
+	// mapped to exit code 128 + 9 = 137.
+	if code != 137 {
+		t.Errorf("ExitCode() = %d, want 137 (128 + SIGKILL) for signal-killed process", code)
 	}
 	t.Logf("Signal death exit code: %d", code)
 }

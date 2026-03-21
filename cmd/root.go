@@ -53,11 +53,12 @@ across different project types.`,
 // that CI/CD pipelines see the real failure code instead of the default 1.
 func Execute() {
 	if err := RootCmd.Execute(); err != nil {
-		fmt.Println(err)
 		var exitErr *ExitCodeError
 		if errors.As(err, &exitErr) {
+			fmt.Println(err)
 			os.Exit(exitErr.Code)
 		}
+		fmt.Println(err)
 		os.Exit(1)
 	}
 }

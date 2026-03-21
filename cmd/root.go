@@ -48,6 +48,9 @@ across different project types.`,
 
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the RootCmd.
+// Exit code propagation: when a subcommand returns an *ExitCodeError (e.g. from a
+// failed test with exit code 42), we extract that code and pass it to os.Exit so
+// that CI/CD pipelines see the real failure code instead of the default 1.
 func Execute() {
 	if err := RootCmd.Execute(); err != nil {
 		fmt.Println(err)

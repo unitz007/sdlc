@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -18,7 +17,6 @@ import (
 	"sdlc/engine"
 	"sdlc/lib"
 
-	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 )
 
@@ -231,18 +229,20 @@ func runTask(ctx context.Context, wd, action string) error {
 
 	if watchMode {
 		fmt.Printf("[SDLC] Watch mode enabled. Watching for changes in detected projects...\n")
-		// Need to pass original projects list or a map to find correct index for coloring inside watchAndRunLoop?
-		// Currently watchAndRunLoop uses the index from the passed slice.
-		// Let's update watchAndRunLoop to handle coloring consistently too, or pass a color map.
-		// For simplicity, let's just pass selectedProjects and let it run.
-		// But colors might shift if we select subset.
-		// To fix coloring, we can attach color to Project struct or look it up.
-		// For now, let's fix the execution loop first.
 		return watchAndRunLoop(ctx, selectedProjects, projects, action, rootEnvConfig)
 	}
 
 	// Execute for each selected project once
 	var wg sync.WaitGroup
+
+	// Create shared SyncWriters for stdout and stderr so that concurrent
+	// goroutines produce atomic, non-interleaved output lines.
+	var sharedStdout, sharedStderr io.Writer
+	if len(selectedProjects) > 1 {
+		sharedStdout = lib.NewSyncWriter(os.Stdout, "")
+		sharedStderr = lib.NewSyncWriter(os.Stderr, "")
+	}
+
 	for i, project := range selectedProjects {
 		wg.Add(1)
 
@@ -258,11 +258,20 @@ func runTask(ctx context.Context, wd, action string) error {
 		go func(p engine.Project, index int) {
 			defer wg.Done()
 			env, args := prepareProjectEnv(p, rootEnvConfig)
-			runProject(ctx, p, index, action, env, args, len(selectedProjects) > 1)
+			runProject(ctx, p, index, action, env, args, len(selectedProjects) > 1, sharedStdout, sharedStderr)
 		}(project, originalIdx)
 	}
 
 	wg.Wait()
+
+	// Flush any remaining buffered partial lines after all goroutines finish.
+	if sw, ok := sharedStdout.(*lib.SyncWriter); ok {
+		sw.Flush()
+	}
+	if sw, ok := sharedStderr.(*lib.SyncWriter); ok {
+		sw.Flush()
+	}
+
 	return nil
 }
 
@@ -278,6 +287,10 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 
 	states := make(map[string]*projectState)
 	var mu sync.Mutex
+
+	// Shared SyncWriters for concurrent output safety in watch mode
+	sharedStdout := lib.NewSyncWriter(os.Stdout, "")
+	sharedStderr := lib.NewSyncWriter(os.Stderr, "")
 
 	// Helper to start (or restart) a project
 	startProject := func(p engine.Project) {
@@ -318,7 +331,7 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 			defer wg.Done()
 			env, args := prepareProjectEnv(p, rootEnvConfig)
 			// Pass a derived context that handles cancellation properly
-			err := runProject(runCtx, p, idx, action, env, args, len(projects) > 1)
+			err := runProject(runCtx, p, idx, action, env, args, len(projects) > 1, sharedStdout, sharedStderr)
 			if err != nil && err != context.Canceled {
 				fmt.Printf("[SDLC] Module %s exited with error: %v\n", p.Name, err)
 			}
@@ -360,6 +373,11 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 			case <-time.After(5 * time.Second):
 				fmt.Println("[SDLC] Timeout waiting for modules to stop")
 			}
+
+			// Flush remaining buffered output
+			sharedStdout.(*lib.SyncWriter).Flush()
+			sharedStderr.(*lib.SyncWriter).Flush()
+
 			return nil
 
 		case <-ticker.C:
@@ -380,6 +398,10 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 				}
 
 				if changed {
+					// Flush before restart to preserve any partial output
+					sharedStdout.(*lib.SyncWriter).Flush()
+					sharedStderr.(*lib.SyncWriter).Flush()
+
 					fmt.Printf("\n[SDLC] File change detected: %s in %s. Restarting module...\n", filepath.Base(changedFile), p.Path)
 					startProject(p)
 				}
@@ -416,7 +438,7 @@ func prepareProjectEnv(p engine.Project, rootEnvConfig *config.EnvSettings) (map
 	return finalEnv, finalArgs
 }
 
-func runProject(ctx context.Context, p engine.Project, index int, action string, env map[string]string, args []string, multi bool) error {
+func runProject(ctx context.Context, p engine.Project, index int, action string, env map[string]string, args []string, multi bool, sharedStdout, sharedStderr io.Writer) error {
 	// Clean up .vite-temp if it exists, to prevent EPERM errors on restart
 	viteTemp := filepath.Join(p.AbsPath, "node_modules", ".vite-temp")
 	if _, err := os.Stat(viteTemp); err == nil {
@@ -432,8 +454,19 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 	var out, errOut io.Writer
 
 	if multi {
-		out = NewPrefixWriter(os.Stdout, prefix)
-		errOut = NewPrefixWriter(os.Stderr, prefix)
+		// Use per-module SyncWriters that feed into the shared SyncWriter.
+		// Each module's output gets its own colorized prefix, while the shared
+		// writer ensures no two modules interleave at the byte level.
+		if sharedStdout != nil {
+			out = lib.NewSyncWriter(sharedStdout, prefix)
+		} else {
+			out = lib.NewSyncWriter(os.Stdout, prefix)
+		}
+		if sharedStderr != nil {
+			errOut = lib.NewSyncWriter(sharedStderr, prefix)
+		} else {
+			errOut = lib.NewSyncWriter(os.Stderr, prefix)
+		}
 	} else {
 		out = os.Stdout
 		errOut = os.Stderr
@@ -474,6 +507,15 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 		fmt.Fprintf(errOut, "Command failed: %v\n", err)
 		return err
 	}
+
+	// Flush any remaining partial output for this module's writer
+	if sw, ok := out.(*lib.SyncWriter); ok {
+		sw.Flush()
+	}
+	if sw, ok := errOut.(*lib.SyncWriter); ok {
+		sw.Flush()
+	}
+
 	return nil
 }
 
@@ -481,6 +523,7 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 func hasChanges(root string, sinceTime time.Time) (bool, string, error) {
 	var changed bool
 	var changedFile string
+
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -518,44 +561,6 @@ func hasChanges(root string, sinceTime time.Time) (bool, string, error) {
 		return true, changedFile, nil
 	}
 	return changed, "", err
-}
-
-// PrefixWriter wraps an io.Writer and prefixes each line with a given prefix
-type PrefixWriter struct {
-	w       io.Writer
-	prefix  []byte
-	midLine bool
-}
-
-func NewPrefixWriter(w io.Writer, prefix string) *PrefixWriter {
-	return &PrefixWriter{
-		w:      w,
-		prefix: []byte(prefix),
-	}
-}
-
-func (pw *PrefixWriter) Write(p []byte) (n int, err error) {
-	lines := bytes.SplitAfter(p, []byte("\n"))
-	for _, line := range lines {
-		if len(line) == 0 {
-			continue
-		}
-
-		var buf []byte
-		if !pw.midLine {
-			buf = append(buf, pw.prefix...)
-			buf = append(buf, line...)
-		} else {
-			buf = line
-		}
-
-		if _, err := pw.w.Write(buf); err != nil {
-			return 0, err
-		}
-
-		pw.midLine = !bytes.HasSuffix(line, []byte("\n"))
-	}
-	return len(p), nil
 }
 
 func filterProjects(projects []engine.Project) ([]engine.Project, error) {
@@ -671,38 +676,6 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 		if selected[i] {
 			result = append(result, p)
 		} else {
-			// Add to ignore list for display purposes later if we want to show ignored status
-			// But the current logic in filterProjects handles ignores.
-			// Here we are returning the *selected* projects.
-			// If we want the UI to show "Ignored", we might need to populate ignoreMods global?
-			// Or just return the subset. The caller expects the subset of projects to run.
-			// However, if we want the "Ignored" UI to show up in the list later, we need to
-			// ensure the unselected ones are treated as "ignored".
-			// The current executeTask logic prints "Multi-module project detected" based on the *initial* detection,
-			// but then iterates over *projects* (which is the full list) to show status.
-			// Wait, executeTask calls filterProjects -> selectedProjects.
-			// Then promptModuleSelection filters *selectedProjects* further.
-			// Then executeTask iterates over *selectedProjects* to run.
-
-			// The "Multi-module project detected" block at the top of executeTask prints ALL projects
-			// and checks ignoreMods global to show [IGNORED].
-			// If we filter here, we are effectively removing them from the execution list.
-			// If we want the [IGNORED] UI to appear, we should probably update the ignoreMods list
-			// or change how executeTask works.
-
-			// Let's update the global ignoreMods list based on unselected items so the UI reflects it?
-			// But promptModuleSelection is called AFTER the initial list printing in executeTask?
-			// Actually, let's check where promptModuleSelection is called.
-			// It is called lines 192-198.
-			// The initial printing happens BEFORE that (lines 142-155).
-			// So the initial list is already printed.
-			// If we want to show the ignored status, we might need to print the list AGAIN or
-			// rely on the user knowing what they selected.
-
-			// The user requirement: "we need to be able to select multiple projects to run in the interactive section and the others ignored"
-			// Implicitly, this means the execution should respect the selection.
-
-			// Let's return the selected subset.
 			ignoreMods = append(ignoreMods, p.Path)
 		}
 	}

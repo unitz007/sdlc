@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -24,15 +23,15 @@ import (
 )
 
 const (
-	colorReset    = "\033[0m"
-	colorRed      = "\033[31m"
-	colorGreen    = "\033[32m"
-	colorYellow   = "\033[33m"
-	colorBlue     = "\033[34m"
-	colorMagenta  = "\033[35m"
-	colorCyan     = "\033[36m"
-	colorWhite    = "\033[37m"
-	colorDarkGrey = "\033[90m"
+	colorReset    = "\\033[0m"
+	colorRed      = "\\033[31m"
+	colorGreen    = "\\033[32m"
+	colorYellow   = "\\033[33m"
+	colorBlue     = "\\033[34m"
+	colorMagenta  = "\\033[35m"
+	colorCyan     = "\\033[36m"
+	colorWhite    = "\\033[37m"
+	colorDarkGrey = "\\033[90m"
 )
 
 // watchDebounceInterval is the time to wait after the last file event
@@ -52,49 +51,10 @@ func getModuleColor(index int) string {
 	return moduleColors[index%len(moduleColors)]
 }
 
-// skippedDirs are directory names that should never be watched or trigger restarts.
-var skippedDirs = map[string]bool{
-	".git":         true,
-	".idea":        true,
-	".planner":     true,
-	"node_modules": true,
-	"dist":         true,
-	"build":        true,
-	"target":       true,
-	"bin":          true,
-	"pkg":          true,
-}
-
-// skippedExtensions are file extensions that should not trigger restarts.
-var skippedExtensions = map[string]bool{
-	".log":  true,
-	".tmp":  true,
-	".lock": true,
-	".pid":  true,
-	".swp":  true,
-}
-
-// shouldSkipPath returns true if the file or directory at the given path
-// should be ignored by the watcher.
-func shouldSkipPath(path string, isDir bool) bool {
-	base := filepath.Base(path)
-
-	// Skip hidden files and directories (but not "." itself)
-	if strings.HasPrefix(base, ".") && base != "." {
-		return true
-	}
-
-	if isDir {
-		return skippedDirs[base]
-	}
-
-	// Skip files with ignored extensions
-	ext := filepath.Ext(base)
-	if skippedExtensions[ext] {
-		return true
-	}
-
-	return false
+// flusher is an interface for writers that need to flush buffered content.
+// It is satisfied by *PrefixWriter (from prefix_writer.go).
+type flusher interface {
+	Flush()
 }
 
 func init() {
@@ -865,53 +825,70 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 		fmt.Fprintf(errOut, "Command failed: %v\n", mainErr)
 	}
 
-	// Execute post-hook (always runs, even if the main command failed)
-	postErr := runHook(ctx, "post", action, p, env, out, errOut, multi)
-	if postErr != nil {
-		// Post-hook failure is reported but doesn't override the main error
-		fmt.Fprintf(errOut, "[SDLC] Warning: post-%s hook failed: %v\n", action, postErr)
+	// Run the command
+	if err := runCommand(ctx, cmdStr, p.AbsPath, out, errOut, env); err != nil {
+		fmt.Fprintf(errOut, "Command failed: %v\n", err)
+		// Flush any buffered output before returning the error
+		if f, ok := out.(flusher); ok {
+			f.Flush()
+		}
+		if f, ok := errOut.(flusher); ok {
+			f.Flush()
+		}
+		return err
 	}
+
+	// Flush any remaining partial lines after the command completes
+	if f, ok := out.(flusher); ok {
+		f.Flush()
+	}
+	if f, ok := errOut.(flusher); ok {
+		f.Flush()
+	}
+
+	return nil
+}
+
+// hasChanges checks if any file in root has been modified since sinceTime
+func hasChanges(root string, sinceTime time.Time) (bool, string, error) {
+	var changed bool
+	var changedFile string
+
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			// Skip .git, .idea, etc.
+			if strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
+				return filepath.SkipDir
+			}
+			// Skip common build/dependency directories
+			if info.Name() == "node_modules" || info.Name() == "dist" || info.Name() == "build" || info.Name() == "target" || info.Name() == "bin" || info.Name() == "pkg" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		// Skip hidden files
+		if strings.HasPrefix(info.Name(), ".") {
+			return nil
+		}
+
+		// Skip log files and other temporary artifacts
+		if strings.HasSuffix(info.Name(), ".log") || strings.HasSuffix(info.Name(), ".tmp") || strings.HasSuffix(info.Name(), ".lock") || strings.HasSuffix(info.Name(), ".pid") || strings.HasSuffix(info.Name(), ".swp") {
+			return nil
+		}
+
+		if info.ModTime().After(sinceTime) {
+			changed = true
+			changedFile = path
+			return io.EOF // Stop walking
+		}
+		return nil
+	})
 
 	// Return the main command error (if any)
 	return mainErr
-}
-
-// PrefixWriter wraps an io.Writer and prefixes each line with a given prefix
-type PrefixWriter struct {
-	w       io.Writer
-	prefix  []byte
-	midLine bool
-}
-
-func NewPrefixWriter(w io.Writer, prefix string) *PrefixWriter {
-	return &PrefixWriter{
-		w:      w,
-		prefix: []byte(prefix),
-	}
-}
-
-func (pw *PrefixWriter) Write(p []byte) (n int, err error) {
-	lines := bytes.SplitAfter(p, []byte("\n"))
-	for _, line := range lines {
-		if len(line) == 0 {
-			continue
-		}
-
-		var buf []byte
-		if !pw.midLine {
-			buf = append(buf, pw.prefix...)
-			buf = append(buf, line...)
-		} else {
-			buf = line
-		}
-
-		if _, err := pw.w.Write(buf); err != nil {
-			return 0, err
-		}
-
-		pw.midLine = !bytes.HasSuffix(line, []byte("\n"))
-	}
-	return len(p), nil
 }
 
 func filterProjects(projects []engine.Project) ([]engine.Project, error) {
@@ -964,7 +941,7 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 	// For now, we assume terminal is available if we are here.
 
 	selected := make(map[int]bool)
-	// Default to all selected initially
+	// Default to all selected initially.
 	for i := range projects {
 		selected[i] = true
 	}

@@ -22,15 +22,15 @@ import (
 )
 
 const (
-	colorReset    = "\033[0m"
-	colorRed      = "\033[31m"
-	colorGreen    = "\033[32m"
-	colorYellow   = "\033[33m"
-	colorBlue     = "\033[34m"
-	colorMagenta  = "\033[35m"
-	colorCyan     = "\033[36m"
-	colorWhite    = "\033[37m"
-	colorDarkGrey = "\033[90m"
+	colorReset    = "\\033[0m"
+	colorRed      = "\\033[31m"
+	colorGreen    = "\\033[32m"
+	colorYellow   = "\\033[33m"
+	colorBlue     = "\\033[34m"
+	colorMagenta  = "\\033[35m"
+	colorCyan     = "\\033[36m"
+	colorWhite    = "\\033[37m"
+	colorDarkGrey = "\\033[90m"
 )
 
 var moduleColors = []string{
@@ -43,6 +43,12 @@ var moduleColors = []string{
 
 func getModuleColor(index int) string {
 	return moduleColors[index%len(moduleColors)]
+}
+
+// flusher is an interface for writers that need to flush buffered content.
+// It is satisfied by *PrefixWriter (from prefix_writer.go).
+type flusher interface {
+	Flush()
 }
 
 func init() {
@@ -230,13 +236,6 @@ func runTask(ctx context.Context, wd, action string) error {
 
 	if watchMode {
 		fmt.Printf("[SDLC] Watch mode enabled. Watching for changes in detected projects...\n")
-		// Need to pass original projects list or a map to find correct index for coloring inside watchAndRunLoop?
-		// Currently watchAndRunLoop uses the index from the passed slice.
-		// Let's update watchAndRunLoop to handle coloring consistently too, or pass a color map.
-		// For simplicity, let's just pass selectedProjects and let it run.
-		// But colors might shift if we select subset.
-		// To fix coloring, we can attach color to Project struct or look it up.
-		// For now, let's fix the execution loop first.
 		return watchAndRunLoop(ctx, selectedProjects, projects, action, rootEnvConfig)
 	}
 
@@ -415,21 +414,6 @@ func prepareProjectEnv(p engine.Project, rootEnvConfig *config.EnvSettings) (map
 	return finalEnv, finalArgs
 }
 
-// flushWriter wraps a PrefixWriter and exposes Flush() while satisfying
-// io.Writer. It is used in runProject so that after command execution
-// completes, any remaining partial lines in the buffer can be emitted.
-type flushWriter struct {
-	pw *PrefixWriter
-}
-
-func (fw *flushWriter) Write(p []byte) (n int, err error) {
-	return fw.pw.Write(p)
-}
-
-func (fw *flushWriter) Flush() error {
-	return fw.pw.Flush()
-}
-
 func runProject(ctx context.Context, p engine.Project, index int, action string, env map[string]string, args []string, multi bool) error {
 	// Clean up .vite-temp if it exists, to prevent EPERM errors on restart
 	viteTemp := filepath.Join(p.AbsPath, "node_modules", ".vite-temp")
@@ -444,15 +428,10 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 	color := getModuleColor(index)
 	prefix := fmt.Sprintf("[%s%s%s] ", color, p.Path, colorReset)
 	var out, errOut io.Writer
-	var stdoutFlusher, stderrFlusher *flushWriter
 
 	if multi {
-		stdoutPW := NewPrefixWriter(os.Stdout, prefix)
-		stderrPW := NewPrefixWriter(os.Stderr, prefix)
-		stdoutFlusher = &flushWriter{pw: stdoutPW}
-		stderrFlusher = &flushWriter{pw: stderrPW}
-		out = stdoutFlusher
-		errOut = stderrFlusher
+		out = NewPrefixWriter(os.Stdout, prefix)
+		errOut = NewPrefixWriter(os.Stderr, prefix)
 	} else {
 		out = os.Stdout
 		errOut = os.Stderr
@@ -491,22 +470,22 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 	// Run the command
 	if err := runCommand(ctx, cmdStr, p.AbsPath, out, errOut, env); err != nil {
 		fmt.Fprintf(errOut, "Command failed: %v\n", err)
-		// Flush any remaining buffered output before returning.
-		if stdoutFlusher != nil {
-			stdoutFlusher.Flush()
+		// Flush any buffered output before returning the error
+		if f, ok := out.(flusher); ok {
+			f.Flush()
 		}
-		if stderrFlusher != nil {
-			stderrFlusher.Flush()
+		if f, ok := errOut.(flusher); ok {
+			f.Flush()
 		}
 		return err
 	}
 
-	// Flush any remaining buffered output after the command completes.
-	if stdoutFlusher != nil {
-		stdoutFlusher.Flush()
+	// Flush any remaining partial lines after the command completes
+	if f, ok := out.(flusher); ok {
+		f.Flush()
 	}
-	if stderrFlusher != nil {
-		stderrFlusher.Flush()
+	if f, ok := errOut.(flusher); ok {
+		f.Flush()
 	}
 
 	return nil
@@ -607,19 +586,8 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 	// If interactive mode is not possible (e.g. non-terminal), default to all
 	// For now, we assume terminal is available if we are here.
 
-	// Use promptui's Select to implement a multi-select simulation since MultiSelect is not stable in all promptui versions
-	// Or we can use a loop to let user toggle.
-	// But simpler is to list all modules and let user select one or "All".
-	// The user asked to "select multiple projects".
-	// A common pattern with promptui for multiselect is to use a loop or custom template,
-	// but here we can try a simple checklist approach if we want to be fancy,
-	// or just use a loop where user picks modules until they say "Done".
-
-	// Let's implement a loop where user can toggle selection.
-
 	selected := make(map[int]bool)
-	// Default to none selected initially? Or all?
-	// Let's default to all selected initially.
+	// Default to all selected initially.
 	for i := range projects {
 		selected[i] = true
 	}
@@ -634,19 +602,10 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 			items = append(items, fmt.Sprintf("%s %s (%s)", prefix, p.Name, p.Path))
 		}
 
-		// Use a custom templates to avoid excessive newlines if needed,
-		// but primarily we want to clear the screen or just rely on promptui's behavior.
-		// However, promptui by default redraws in place if stdout is terminal.
-		// The issue "log every click" might refer to the fact that promptui prints the final selection 
-		// to stdout when you press enter.
-		// To suppress that, we can set HideSelected: true in templates?
-		// But Select struct doesn't have HideSelected. It has HideSelected bool.
-		// Let's try HideSelected: true.
-
 		prompt := promptui.Select{
-			Label: "Select modules to run (Select to toggle)",
-			Items: items,
-			Size:  len(items) + 1,
+			Label:        "Select modules to run (Select to toggle)",
+			Items:        items,
+			Size:         len(items) + 1,
 			HideSelected: true,
 		}
 
@@ -669,36 +628,6 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 		if selected[i] {
 			result = append(result, p)
 		} else {
-			// Add to ignore list for display purposes later if we want to show ignored status
-			// But the current logic in filterProjects handles ignores.
-			// Here we are returning the *selected* projects.
-			// If we want the "Ignored" UI to show up in the list later, we need to
-			// ensure the unselected ones are treated as "ignored".
-			// The current executeTask logic prints "Multi-module project detected" based on the *initial* detection,
-			// but then iterates over *projects* (which is the full list) to show status.
-			// Wait, executeTask calls filterProjects -> selectedProjects.
-			// Then promptModuleSelection filters *selectedProjects* further.
-			// Then executeTask iterates over *selectedProjects* to run.
-
-			// The "Multi-module project detected" block at the top of executeTask prints ALL projects
-			// and checks ignoreMods global to show [IGNORED].
-			// If we filter here, we are effectively removing them from the execution list.
-			// If we want the [IGNORED] UI to appear, we should probably update the ignoreMods list
-			// or change how executeTask works.
-
-			// Let's update the global ignoreMods list based on unselected items so the UI reflects it?
-			// But promptModuleSelection is called AFTER the initial list printing in executeTask?
-			// Actually, let's check where promptModuleSelection is called.
-			// It is called lines 192-198.
-			// The initial printing happens BEFORE that (lines 142-155).
-			// So the initial list is already printed.
-			// If we want to show the ignored status, we might need to print the list AGAIN or
-			// rely on the user knowing what they selected.
-
-			// The user requirement: "we need to be able to select multiple projects to run in the interactive section and the others ignored"
-			// Implicitly, this means the execution should respect the selection.
-
-			// Let's return the selected subset.
 			ignoreMods = append(ignoreMods, p.Path)
 		}
 	}
@@ -713,10 +642,10 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 func printBanner() {
 	banner := `
    _____ ____  __    ______
-  / ___// __ \\/ /   / ____/
-  \\__ \\/ / / / /   / /     
+  / ___// __ \/ /   / ____/
+  \__ \/ / / / /   / /     
  ___/ / /_/ / /___/ /___   
-/____/_____/_____/\\____/   
+/____/_____/_____/\____/   
 `
 	fmt.Println(colorCyan + banner + colorReset)
 }

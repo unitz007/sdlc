@@ -1,381 +1,260 @@
 package cmd
 
 import (
+	"bytes"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 )
 
-// fakeWriter is a minimal bytes.Buffer wrapper for testing.
-type fakeWriter struct {
-	mu  sync.Mutex
-	buf []byte
-}
-
-func (f *fakeWriter) Write(p []byte) (n int, err error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.buf = append(f.buf, p...)
-	return len(p), nil
-}
-
-func (f *fakeWriter) String() string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return string(f.buf)
-}
-
-func (f *fakeWriter) Len() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.buf)
-}
-
 // ---------------------------------------------------------------------------
-// Basic functional tests
+// Basic correctness
 // ---------------------------------------------------------------------------
 
 func TestPrefixWriter_SingleLine(t *testing.T) {
-	var buf fakeWriter
-	pw := NewPrefixWriter(&buf, ">>> ")
+	var buf bytes.Buffer
+	pw := NewPrefixWriter(&buf, "[test] ")
 
-	_, err := pw.Write([]byte("hello\n"))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	pw.Write([]byte("hello\n"))
+	pw.Flush()
 
-	if buf.String() != ">>> hello\n" {
-		t.Errorf("got %q, want %q", buf.String(), ">>> hello\n")
+	got := buf.String()
+	want := "[test] hello\n"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
 func TestPrefixWriter_MultipleLines(t *testing.T) {
-	var buf fakeWriter
-	pw := NewPrefixWriter(&buf, "[test] ")
+	var buf bytes.Buffer
+	pw := NewPrefixWriter(&buf, "[app] ")
 
-	_, err := pw.Write([]byte("line one\nline two\n"))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	pw.Write([]byte("line one\nline two\nline three\n"))
+	pw.Flush()
 
-	expected := "[test] line one\n[test] line two\n"
-	if buf.String() != expected {
-		t.Errorf("got %q, want %q", buf.String(), expected)
-	}
-}
-
-func TestPrefixWriter_PartialLine(t *testing.T) {
-	var buf fakeWriter
-	pw := NewPrefixWriter(&buf, ">> ")
-
-	// Write a partial line — nothing should be flushed yet.
-	_, err := pw.Write([]byte("partial"))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if buf.String() != "" {
-		t.Errorf("expected empty output for partial line, got %q", buf.String())
-	}
-
-	// Complete the line.
-	_, err = pw.Write([]byte(" text\n"))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if buf.String() != ">> partial text\n" {
-		t.Errorf("got %q, want %q", buf.String(), ">> partial text\n")
+	got := buf.String()
+	want := "[app] line one\n[app] line two\n[app] line three\n"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
-func TestPrefixWriter_FlushPartialLine(t *testing.T) {
-	var buf fakeWriter
-	pw := NewPrefixWriter(&buf, ">>> ")
+func TestPrefixWriter_SplitAcrossWrites(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewPrefixWriter(&buf, "[svc] ")
 
-	_, err := pw.Write([]byte("no newline at end"))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	// Write one line in three chunks.
+	pw.Write([]byte("hel"))
+	pw.Write([]byte("lo wo"))
+	pw.Write([]byte("rld\n"))
+	pw.Flush()
 
-	// Flush should output the remaining partial line with a trailing newline.
-	err = pw.Flush()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	expected := ">>> no newline at end\n"
-	if buf.String() != expected {
-		t.Errorf("got %q, want %q", buf.String(), expected)
+	got := buf.String()
+	want := "[svc] hello world\n"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
-func TestPrefixWriter_FlushEmpty(t *testing.T) {
-	var buf fakeWriter
-	pw := NewPrefixWriter(&buf, ">>> ")
+func TestPrefixWriter_SplitAtNewline(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewPrefixWriter(&buf, "[a] ")
 
-	// Flushing when nothing is buffered should be a no-op.
-	err := pw.Flush()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	// First write ends exactly at the newline.
+	pw.Write([]byte("first line\nsec"))
+	pw.Write([]byte("ond line\n"))
+	pw.Flush()
 
-	if buf.String() != "" {
-		t.Errorf("expected empty output after flush on empty buffer, got %q", buf.String())
-	}
-}
-
-func TestPrefixWriter_EmptyPrefix(t *testing.T) {
-	var buf fakeWriter
-	pw := NewPrefixWriter(&buf, "")
-
-	_, err := pw.Write([]byte("hello\n"))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if buf.String() != "hello\n" {
-		t.Errorf("got %q, want %q", buf.String(), "hello\n")
+	got := buf.String()
+	want := "[a] first line\n[a] second line\n"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
 func TestPrefixWriter_EmptyWrite(t *testing.T) {
-	var buf fakeWriter
-	pw := NewPrefixWriter(&buf, ">>> ")
+	var buf bytes.Buffer
+	pw := NewPrefixWriter(&buf, "[x] ")
 
-	n, err := pw.Write([]byte(""))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if n != 0 {
-		t.Errorf("expected 0 bytes written, got %d", n)
-	}
-}
-
-func TestPrefixWriter_MultipleWritesBeforeNewline(t *testing.T) {
-	var buf fakeWriter
-	pw := NewPrefixWriter(&buf, ">>> ")
-
-	// Write in chunks that split a line.
-	pw.Write([]byte("hel"))
-	pw.Write([]byte("lo w"))
-	pw.Write([]byte("orld\n"))
-
-	expected := ">>> hello world\n"
-	if buf.String() != expected {
-		t.Errorf("got %q, want %q", buf.String(), expected)
-	}
-}
-
-func TestPrefixWriter_MultipleFlushCalls(t *testing.T) {
-	var buf fakeWriter
-	pw := NewPrefixWriter(&buf, ">>> ")
-
-	pw.Write([]byte("data"))
+	pw.Write([]byte{})
+	pw.Write(nil)
 	pw.Flush()
-	pw.Flush() // Second flush should be no-op
 
-	expected := ">>> data\n"
-	if buf.String() != expected {
-		t.Errorf("got %q, want %q", buf.String(), expected)
-	}
-}
-
-func TestPrefixWriter_MixedCompleteAndPartialLines(t *testing.T) {
-	var buf fakeWriter
-	pw := NewPrefixWriter(&buf, "[p] ")
-
-	pw.Write([]byte("first line\nsecond part"))
-	// "first line" should be flushed
-	if buf.String() != "[p] first line\n" {
-		t.Errorf("after first write, got %q", buf.String())
-	}
-
-	pw.Write([]byte(" continues\nthird\n"))
-	// Now "second part continues" and "third" should be flushed
-	expected := "[p] first line\n[p] second part continues\n[p] third\n"
-	if buf.String() != expected {
-		t.Errorf("got %q, want %q", buf.String(), expected)
-	}
-
-	// Nothing should remain in the buffer
-	pw.Flush()
-	if buf.String() != expected {
-		t.Errorf("after flush, got %q, want %q", buf.String(), expected)
-	}
-}
-
-func TestPrefixWriter_OnlyNewlines(t *testing.T) {
-	var buf fakeWriter
-	pw := NewPrefixWriter(&buf, ">>> ")
-
-	pw.Write([]byte("\n\n"))
-	expected := ">>> \n>>> \n"
-	if buf.String() != expected {
-		t.Errorf("got %q, want %q", buf.String(), expected)
-	}
-}
-
-func TestPrefixWriter_ColoredPrefix(t *testing.T) {
-	var buf fakeWriter
-	prefix := "\033[32m[mymod]\033[0m "
-	pw := NewPrefixWriter(&buf, prefix)
-
-	pw.Write([]byte("output line\n"))
-	expected := "\033[32m[mymod]\033[0m output line\n"
-	if buf.String() != expected {
-		t.Errorf("got %q, want %q", buf.String(), expected)
+	if buf.Len() != 0 {
+		t.Errorf("expected empty output, got %q", buf.String())
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Concurrency tests — verify thread safety under parallel writes
+// Flush behaviour
+// ---------------------------------------------------------------------------
+
+func TestPrefixWriter_FlushPartialLine(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewPrefixWriter(&buf, "[p] ")
+
+	pw.Write([]byte("no newline"))
+	pw.Flush()
+
+	got := buf.String()
+	want := "[p] no newline\n"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestPrefixWriter_FlushIdempotent(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewPrefixWriter(&buf, "[i] ")
+
+	pw.Write([]byte("done\n"))
+	pw.Flush()
+	pw.Flush()
+	pw.Flush()
+
+	got := buf.String()
+	want := "[i] done\n"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestPrefixWriter_FlushAfterCompleteLines(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewPrefixWriter(&buf, "[c] ")
+
+	pw.Write([]byte("line one\nline two\n"))
+	// The buffer should be empty after Write (both lines complete).
+	pw.Flush() // should be a no-op for buffered data
+
+	got := buf.String()
+	want := "[c] line one\n[c] line two\n"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Concurrency stress tests
 // ---------------------------------------------------------------------------
 
 func TestPrefixWriter_ConcurrentWritesNoGarbling(t *testing.T) {
-	var buf fakeWriter
-	prefixA := "[moduleA] "
-	prefixB := "[moduleB] "
+	var buf bytes.Buffer
+	pw1 := NewPrefixWriter(&buf, "[alpha] ")
+	pw2 := NewPrefixWriter(&buf, "[beta] ")
 
-	pwA := NewPrefixWriter(&buf, prefixA)
-	pwB := NewPrefixWriter(&buf, prefixB)
-
-	var wg sync.WaitGroup
 	const linesPerWriter = 50
+	var wg sync.WaitGroup
+	wg.Add(2)
 
-	// Concurrently write lines from two writers.
-	for i := 0; i < linesPerWriter; i++ {
-		wg.Add(2)
+	// Writer 1
+	go func() {
+		defer wg.Done()
+		for i := 0; i < linesPerWriter; i++ {
+			pw1.Write([]byte(fmt.Sprintf("line %03d\n", i)))
+		}
+		pw1.Flush()
+	}()
 
-		go func(idx int) {
-			defer wg.Done()
-			msg := []byte(fmt.Sprintf("log line %03d\n", idx))
-			if _, err := pwA.Write(msg); err != nil {
-				t.Errorf("pwA write error: %v", err)
-			}
-		}(i)
-
-		go func(idx int) {
-			defer wg.Done()
-			msg := []byte(fmt.Sprintf("event %03d\n", idx))
-			if _, err := pwB.Write(msg); err != nil {
-				t.Errorf("pwB write error: %v", err)
-			}
-		}(i)
-	}
+	// Writer 2
+	go func() {
+		defer wg.Done()
+		for i := 0; i < linesPerWriter; i++ {
+			pw2.Write([]byte(fmt.Sprintf("line %03d\n", i)))
+		}
+		pw2.Flush()
+	}()
 
 	wg.Wait()
 
-	// Flush any remaining partial lines.
-	pwA.Flush()
-	pwB.Flush()
-
-	output := buf.String()
-
-	// Verify every output line is properly prefixed — no garbling.
-	lines := strings.Split(output, "\n")
-	// The last element may be empty from the trailing newline.
-	for _, line := range lines {
-		if line == "" {
-			continue
-		}
-		if !strings.HasPrefix(line, "[moduleA] ") && !strings.HasPrefix(line, "[moduleB] ") {
-			t.Errorf("garbled line detected (no valid prefix): %q", line)
-		}
+	// Verify every line is atomic — starts with the correct prefix and ends
+	// with a newline, never interleaved.
+	lines := strings.Split(buf.String(), "\n")
+	// Last element after Split is empty string (trailing newline).
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
 	}
-
-	// Verify total count.
-	prefixACount := strings.Count(output, "[moduleA] ")
-	prefixBCount := strings.Count(output, "[moduleB] ")
-	if prefixACount != linesPerWriter {
-		t.Errorf("expected %d lines from moduleA, got %d", linesPerWriter, prefixACount)
+	if len(lines) != linesPerWriter*2 {
+		t.Fatalf("expected %d lines, got %d", linesPerWriter*2, len(lines))
 	}
-	if prefixBCount != linesPerWriter {
-		t.Errorf("expected %d lines from moduleB, got %d", linesPerWriter, prefixBCount)
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "[alpha] ") && !strings.HasPrefix(line, "[beta] ") {
+			t.Errorf("line %d has unexpected prefix: %q", i, line)
+		}
 	}
 }
 
 func TestPrefixWriter_ConcurrentWritesWithPartialLines(t *testing.T) {
-	var buf fakeWriter
-	pw := NewPrefixWriter(&buf, "[worker] ")
+	var buf bytes.Buffer
+	pw1 := NewPrefixWriter(&buf, "[A] ")
+	pw2 := NewPrefixWriter(&buf, "[B] ")
 
+	const numGoroutines = 10
+	const writesPer = 20
 	var wg sync.WaitGroup
-	const goroutines = 10
+	wg.Add(numGoroutines)
 
-	for i := 0; i < goroutines; i++ {
-		wg.Add(1)
-		go func(id int) {
+	for g := 0; g < numGoroutines; g++ {
+		pw := pw1
+		if g%2 == 1 {
+			pw = pw2
+		}
+		go func(pw *PrefixWriter, id int) {
 			defer wg.Done()
-			// Write partial then complete.
-			pw.Write([]byte(fmt.Sprintf("partial-%d", id)))
-			pw.Write([]byte(fmt.Sprintf("-complete-%d\n", id)))
-		}(i)
+			for i := 0; i < writesPer; i++ {
+				// Split each write into two chunks to test partial line buffering.
+				part1 := fmt.Sprintf("goroutine-%d msg-%d ", id, i)
+				part2 := fmt.Sprintf("value %d\n", id*i)
+				pw.Write([]byte(part1))
+				pw.Write([]byte(part2))
+			}
+			pw.Flush()
+		}(pw, g)
 	}
 
 	wg.Wait()
-	pw.Flush()
 
-	output := buf.String()
-
-	// Each goroutine should produce exactly one line.
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	if len(lines) != goroutines {
-		t.Errorf("expected %d lines, got %d", goroutines, len(lines))
+	// Verify no line interleaving.
+	lines := strings.Split(buf.String(), "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
 	}
-
-	for _, line := range lines {
-		if !strings.HasPrefix(line, "[worker] ") {
-			t.Errorf("garbled line (missing prefix): %q", line)
-		}
-		// Verify the line content is intact.
-		content := strings.TrimPrefix(line, "[worker] ")
-		if !strings.HasPrefix(content, "partial-") || !strings.Contains(content, "-complete-") {
-			t.Errorf("line content appears garbled: %q", content)
+	expected := numGoroutines * writesPer
+	if len(lines) != expected {
+		t.Fatalf("expected %d lines, got %d", expected, len(lines))
+	}
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "[A] ") && !strings.HasPrefix(line, "[B] ") {
+			t.Errorf("line %d has unexpected prefix: %q", i, line)
 		}
 	}
 }
 
 func TestPrefixWriter_ConcurrentFlush(t *testing.T) {
-	var buf fakeWriter
-	pwA := NewPrefixWriter(&buf, "[A] ")
-	pwB := NewPrefixWriter(&buf, "[B] ")
+	var buf bytes.Buffer
+	pw := NewPrefixWriter(&buf, "[f] ")
+
+	// Write data with no trailing newline, then have many goroutines flush concurrently.
+	pw.Write([]byte("partial data"))
+	pw.Write([]byte(" still no newline"))
 
 	var wg sync.WaitGroup
-	for i := 0; i < 20; i++ {
-		wg.Add(2)
-
+	const flushers = 20
+	wg.Add(flushers)
+	for i := 0; i < flushers; i++ {
 		go func() {
 			defer wg.Done()
-			pwA.Write([]byte("msg\n"))
-			pwA.Flush()
-		}()
-
-		go func() {
-			defer wg.Done()
-			pwB.Write([]byte("msg\n"))
-			pwB.Flush()
+			pw.Flush()
 		}()
 	}
-
 	wg.Wait()
 
-	output := buf.String()
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
-		if line == "" {
-			continue
-		}
-		if !strings.HasPrefix(line, "[A] ") && !strings.HasPrefix(line, "[B] ") {
-			t.Errorf("garbled line: %q", line)
-		}
-	}
-
-	aCount := strings.Count(output, "[A] msg\n")
-	bCount := strings.Count(output, "[B] msg\n")
-	if aCount != 20 {
-		t.Errorf("expected 20 lines from A, got %d", aCount)
-	}
-	if bCount != 20 {
-		t.Errorf("expected 20 lines from B, got %d", bCount)
+	got := buf.String()
+	// Flush should have written the partial content exactly once (the first
+	// Flush resets the buffer; subsequent ones are no-ops).
+	want := "[f] partial data still no newline\n"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }

@@ -14,8 +14,10 @@ var (
 	extraArgs  string
 	targetMod  string
 	ignoreMods []string
+
 	runAllMods bool
 	watchMode  bool
+
 	dryRun     bool
 )
 
@@ -46,6 +48,20 @@ func init() {
 	RootCmd.PersistentFlags().BoolVarP(&runAllMods, "all", "a", false, "Run command for all detected modules")
 	RootCmd.PersistentFlags().BoolVarP(&watchMode, "watch", "w", false, "Watch for file changes and restart")
 	RootCmd.PersistentFlags().BoolVarP(&dryRun, "dry-run", "n", false, "Show what would happen without executing commands (dry run)")
+}
+
+// SetupDynamicCommands registers dynamic sub-commands from custom actions and
+// discovered plugins. This must be called after flag parsing so that --dir
+// and --config flags are available.
+func SetupDynamicCommands() {
+	// Register custom actions as dynamic sub-commands (AC3)
+	RegisterDynamicCommands()
+
+	// Register discovered plugins as sub-commands (AC4)
+	wd, err := resolveWorkDir(workDir)
+	if err == nil {
+		RegisterPluginCommands(wd)
+	}
 }
 
 // resolveWorkDir handles the directory resolution logic including tilde expansion

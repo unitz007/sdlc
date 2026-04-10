@@ -45,7 +45,7 @@ func DetectProjects(workDir string, tasks map[string]lib.Task) ([]Project, error
 			fmt.Printf("Warning: failed to read local config in %s: %v\n", dir, err)
 		}
 
-		// Merge with global tasks
+		// Merge with global tasks — local overrides global
 		effectiveTasks := tasks
 		// fmt.Printf("DEBUG: Checking %s, tasks count: %d\n", dir, len(effectiveTasks))
 		if len(localTasks) > 0 {

@@ -94,6 +94,79 @@ var cleanCmd = &cobra.Command{
 	},
 }
 
+// RegisterDynamicCommands scans loaded config for custom actions and registers
+// them as Cobra sub-commands. These appear in help output and execute the same
+// pipeline as built-in commands (config load → project detect → filter → execute
+// with hooks).
+func RegisterDynamicCommands() {
+	tasks := loadConfigForDiscovery()
+	if tasks == nil {
+		return
+	}
+
+	// Collect all custom action names across all tasks
+	customActions := make(map[string]string) // action name -> description
+	for _, task := range tasks {
+		for name, cmd := range task.Custom {
+			if _, exists := customActions[name]; !exists {
+				customActions[name] = cmd
+			}
+		}
+	}
+
+	if len(customActions) == 0 {
+		return
+	}
+
+	// Sort for deterministic ordering
+	names := make([]string, 0, len(customActions))
+	for name := range customActions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		actionName := name
+		cmdStr := customActions[name]
+		dynamicCmd := &cobra.Command{
+			Use:   actionName,
+			Short: fmt.Sprintf("Custom command: %s", cmdStr),
+			Long:  fmt.Sprintf("Runs the custom action '%s' defined in .sdlc.json.\nCommand: %s", actionName, cmdStr),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return executeTask(cmd, actionName)
+			},
+			GroupID: "custom",
+		}
+		RootCmd.AddCommand(dynamicCmd)
+	}
+
+	// Add a custom commands group to the help output
+	RootCmd.AddGroup(&cobra.Group{
+		ID:    "custom",
+		Title: "Custom Commands:",
+	})
+}
+
+// loadConfigForDiscovery loads config to discover custom actions for dynamic
+// sub-command registration. It tries local config first, then global.
+func loadConfigForDiscovery() map[string]lib.Task {
+	wd, err := resolveWorkDir(workDir)
+	if err != nil {
+		return nil
+	}
+
+	var tasks map[string]lib.Task
+	if cfgFile != "" {
+		tasks, _ = config.Load(cfgFile)
+	} else {
+		tasks, _ = config.LoadLocal(wd)
+		if tasks == nil {
+			tasks, _ = config.Load("")
+		}
+	}
+	return tasks
+}
+
 func executeTask(cmd *cobra.Command, action string) error {
 	printBanner()
 	// Resolve working directory
@@ -224,6 +297,14 @@ func runTask(ctx context.Context, wd, action string) error {
 			color := getModuleColor(i)
 			prefix := fmt.Sprintf("[%s%s%s] ", color, p.Path, colorReset)
 			fmt.Printf(" - %s%s\n", prefix, cmdStr)
+
+			// Show hooks in dry-run
+			if preHook := p.Task.PreHook(action); preHook != "" {
+				fmt.Printf(" - %s[pre-hook] %s\n", prefix, preHook)
+			}
+			if postHook := p.Task.PostHook(action); postHook != "" {
+				fmt.Printf(" - %s[post-hook] %s\n", prefix, postHook)
+			}
 		}
 		// Do not perform any actions in dry-run mode
 		return nil
@@ -257,6 +338,7 @@ func runTask(ctx context.Context, wd, action string) error {
 
 		go func(p engine.Project, index int) {
 			defer wg.Done()
+
 			env, args := prepareProjectEnv(p, rootEnvConfig)
 			runProject(ctx, p, index, action, env, args, len(selectedProjects) > 1)
 		}(project, originalIdx)
@@ -455,6 +537,52 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 	}
 
 	// Substitute environment variables in the command string
+	substituteEnvVars(&cmdStr, env)
+
+	// AC2: Run pre-hook if defined
+	if preHookCmd := p.Task.PreHook(action); preHookCmd != "" {
+		substituteEnvVars(&preHookCmd, env)
+		if !multi {
+			fmt.Printf("[SDLC] Running pre-hook for %s: %s\n", action, preHookCmd)
+		}
+		if err := runCommand(ctx, preHookCmd, p.AbsPath, out, errOut, env); err != nil {
+			fmt.Fprintf(errOut, "Pre-hook failed (skipping main command): %v\n", err)
+			// Run post-hook even on pre-hook failure
+			runPostHookIfNeeded(ctx, p, action, env, out, errOut, multi)
+			return fmt.Errorf("pre-hook for action %s failed: %w", action, err)
+		}
+	}
+
+	// Run the main command
+	mainErr := runCommand(ctx, cmdStr, p.AbsPath, out, errOut, env)
+	if mainErr != nil {
+		fmt.Fprintf(errOut, "Command failed: %v\n", mainErr)
+	}
+
+	// AC2: Run post-hook if defined (runs regardless of main command success/failure)
+	runPostHookIfNeeded(ctx, p, action, env, out, errOut, multi)
+
+	return mainErr
+}
+
+// runPostHookIfNeeded executes the post-hook for the given action if one is defined.
+func runPostHookIfNeeded(ctx context.Context, p engine.Project, action string, env map[string]string, out, errOut io.Writer, multi bool) {
+	postHookCmd := p.Task.PostHook(action)
+	if postHookCmd == "" {
+		return
+	}
+	substituteEnvVars(&postHookCmd, env)
+	if !multi {
+		fmt.Printf("[SDLC] Running post-hook for %s: %s\n", action, postHookCmd)
+	}
+	if err := runCommand(ctx, postHookCmd, p.AbsPath, out, errOut, env); err != nil {
+		fmt.Fprintf(errOut, "Post-hook failed: %v\n", err)
+	}
+}
+
+// substituteEnvVars replaces $KEY and ${KEY} patterns in cmdStr with values from env.
+// Longer keys are replaced first to avoid partial matches.
+func substituteEnvVars(cmdStr *string, env map[string]string) {
 	keys := make([]string, 0, len(env))
 	for k := range env {
 		keys = append(keys, k)
@@ -465,16 +593,9 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 
 	for _, k := range keys {
 		v := env[k]
-		cmdStr = strings.ReplaceAll(cmdStr, fmt.Sprintf("${%s}", k), v)
-		cmdStr = strings.ReplaceAll(cmdStr, fmt.Sprintf("$%s", k), v)
+		*cmdStr = strings.ReplaceAll(*cmdStr, fmt.Sprintf("${%s}", k), v)
+		*cmdStr = strings.ReplaceAll(*cmdStr, fmt.Sprintf("$%s", k), v)
 	}
-
-	// Run the command
-	if err := runCommand(ctx, cmdStr, p.AbsPath, out, errOut, env); err != nil {
-		fmt.Fprintf(errOut, "Command failed: %v\n", err)
-		return err
-	}
-	return nil
 }
 
 // hasChanges checks if any file in root has been modified since sinceTime
@@ -646,9 +767,9 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 		// Let's try HideSelected: true.
 
 		prompt := promptui.Select{
-			Label: "Select modules to run (Select to toggle)",
-			Items: items,
-			Size:  len(items) + 1,
+			Label:       "Select modules to run (Select to toggle)",
+			Items:       items,
+			Size:        len(items) + 1,
 			HideSelected: true,
 		}
 
@@ -671,38 +792,6 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 		if selected[i] {
 			result = append(result, p)
 		} else {
-			// Add to ignore list for display purposes later if we want to show ignored status
-			// But the current logic in filterProjects handles ignores.
-			// Here we are returning the *selected* projects.
-			// If we want the UI to show "Ignored", we might need to populate ignoreMods global?
-			// Or just return the subset. The caller expects the subset of projects to run.
-			// However, if we want the "Ignored" UI to show up in the list later, we need to
-			// ensure the unselected ones are treated as "ignored".
-			// The current executeTask logic prints "Multi-module project detected" based on the *initial* detection,
-			// but then iterates over *projects* (which is the full list) to show status.
-			// Wait, executeTask calls filterProjects -> selectedProjects.
-			// Then promptModuleSelection filters *selectedProjects* further.
-			// Then executeTask iterates over *selectedProjects* to run.
-
-			// The "Multi-module project detected" block at the top of executeTask prints ALL projects
-			// and checks ignoreMods global to show [IGNORED].
-			// If we filter here, we are effectively removing them from the execution list.
-			// If we want the [IGNORED] UI to appear, we should probably update the ignoreMods list
-			// or change how executeTask works.
-
-			// Let's update the global ignoreMods list based on unselected items so the UI reflects it?
-			// But promptModuleSelection is called AFTER the initial list printing in executeTask?
-			// Actually, let's check where promptModuleSelection is called.
-			// It is called lines 192-198.
-			// The initial printing happens BEFORE that (lines 142-155).
-			// So the initial list is already printed.
-			// If we want to show the ignored status, we might need to print the list AGAIN or
-			// rely on the user knowing what they selected.
-
-			// The user requirement: "we need to be able to select multiple projects to run in the interactive section and the others ignored"
-			// Implicitly, this means the execution should respect the selection.
-
-			// Let's return the selected subset.
 			ignoreMods = append(ignoreMods, p.Path)
 		}
 	}
@@ -717,10 +806,10 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 func printBanner() {
 	banner := `
    _____ ____  __    ______
-  / ___// __ \/ /   / ____/
-  \__ \/ / / / /   / /     
+  / ___// __ \\/ /   / ____/
+  \\__ \\/ / / / /   / /     
  ___/ / /_/ / /___/ /___   
-/____/_____/_____/\____/   
+/____/_____/_____/\\____/   
 `
 	fmt.Println(colorCyan + banner + colorReset)
 }

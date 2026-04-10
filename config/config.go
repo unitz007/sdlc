@@ -17,12 +17,14 @@ const (
 
 // EnvSettings represents the configuration from .sdlc.conf
 type EnvSettings struct {
-	Env  map[string]string
-	Args []string
+	Env     map[string]string
+	Args    []string
+	Depends []string // Module paths this module depends on (relative paths)
 }
 
 // LoadEnvConfig reads the .sdlc.conf file from the given directory.
-// It parses lines starting with '$' as environment variables and '-' as flags.
+// It parses lines starting with '$' as environment variables, '-' as flags,
+// and 'depends=' as inter-module dependency declarations.
 func LoadEnvConfig(dir string) (*EnvSettings, error) {
 	configPath := filepath.Join(dir, envConfigName)
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -36,8 +38,9 @@ func LoadEnvConfig(dir string) (*EnvSettings, error) {
 	defer file.Close()
 
 	config := &EnvSettings{
-		Env:  make(map[string]string),
-		Args: make([]string, 0),
+		Env:     make(map[string]string),
+		Args:    make([]string, 0),
+		Depends: make([]string, 0),
 	}
 
 	scanner := bufio.NewScanner(file)
@@ -58,6 +61,18 @@ func LoadEnvConfig(dir string) (*EnvSettings, error) {
 					value = value[1 : len(value)-1]
 				}
 				config.Env[key] = value
+			}
+		} else if strings.HasPrefix(line, "depends=") {
+			// Dependency declaration: depends=path1,path2,...
+			depList := strings.TrimSpace(line[len("depends="):])
+			if depList != "" {
+				deps := strings.Split(depList, ",")
+				for _, d := range deps {
+					d = strings.TrimSpace(d)
+					if d != "" {
+						config.Depends = append(config.Depends, d)
+					}
+				}
 			}
 		} else if strings.HasPrefix(line, "-") {
 			// Flag: --flag=value or -f=value

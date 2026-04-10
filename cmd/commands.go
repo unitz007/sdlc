@@ -33,6 +33,10 @@ const (
 	colorCyan     = "\033[36m"
 	colorWhite    = "\033[37m"
 	colorDarkGrey = "\033[90m"
+
+	// debounceInterval is the time window to coalesce rapid file changes
+	// into a single restart per module.
+	debounceInterval = 1 * time.Second
 )
 
 // watchDebounceInterval is the time to wait after the last file event
@@ -393,14 +397,11 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 
 		state, exists := states[p.Path]
 		if exists {
-			// Stop existing
 			state.cancel()
 			state.wg.Wait()
-			// Add a small delay to ensure file handles are released
 			time.Sleep(500 * time.Millisecond)
 		}
 
-		// New context
 		runCtx, cancel := context.WithCancel(ctx)
 		wg := &sync.WaitGroup{}
 		wg.Add(1)
@@ -412,7 +413,6 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 		}
 		states[p.Path] = newState
 
-		// Find original index for coloring
 		idx := 0
 		for i, original := range allProjects {
 			if original.Path == p.Path {
@@ -424,7 +424,6 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 		go func() {
 			defer wg.Done()
 			env, args := prepareProjectEnv(p, rootEnvConfig)
-			// Pass a derived context that handles cancellation properly
 			err := runProject(runCtx, p, idx, action, env, args, len(projects) > 1)
 			if err != nil && err != context.Canceled {
 				fmt.Printf("[SDLC] Module %s exited with error: %v\n", p.Name, err)
@@ -432,9 +431,95 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 		}()
 	}
 
-	// Initial start
+	// Helper to restart a module and all modules that depend on it (cascade).
+	restartWithCascade := func(p engine.Project, reason string) {
+		// Collect the module itself plus all reverse dependencies
+		restartSet := make(map[string]bool)
+		restartSet[p.Path] = true
+
+		// BFS to find all transitive dependents
+		queue := []string{p.Path}
+		for len(queue) > 0 {
+			current := queue[0]
+			queue = queue[1:]
+			for _, dependent := range reverseDeps[current] {
+				if !restartSet[dependent] {
+					restartSet[dependent] = true
+					queue = append(queue, dependent)
+				}
+			}
+		}
+
+		// Restart the source module
+		restartModule(p, reason)
+
+		// Restart all dependents
+		for depPath := range restartSet {
+			if depPath == p.Path {
+				continue
+			}
+			if depProject, ok := resolveProject(depPath); ok {
+				restartModule(depProject, fmt.Sprintf("dependency %s changed", p.Path))
+			}
+		}
+	}
+
+	// statesRootLastMod returns the minimum lastMod time across all module states,
+	// used for checking if the root directory has changes not already covered by
+	// per-module checks.
+	statesRootLastMod := func() time.Time {
+		earliest := time.Now()
+		for _, s := range states {
+			if s.lastMod.Before(earliest) {
+				earliest = s.lastMod
+			}
+		}
+		return earliest
+	}
+
+	// isChildOfAnyModule returns true if the given file path is inside any of the
+	// selected project directories. This prevents root-level checks from triggering
+	// restarts for changes that are already handled by per-module checks.
+	isChildOfAnyModule := func(filePath string) bool {
+		for _, p := range projects {
+			if strings.HasPrefix(filePath, p.AbsPath+string(filepath.Separator)) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Initial start of all selected projects
 	for _, p := range projects {
-		startProject(p)
+		mu.Lock()
+		runCtx, cancel := context.WithCancel(ctx)
+		wg := &sync.WaitGroup{}
+		wg.Add(1)
+
+		newState := &projectState{
+			cancel:  cancel,
+			wg:      wg,
+			lastMod: time.Now(),
+		}
+		states[p.Path] = newState
+		mu.Unlock()
+
+		idx := 0
+		for i, original := range allProjects {
+			if original.Path == p.Path {
+				idx = i
+				break
+			}
+		}
+
+		go func(proj engine.Project, index int) {
+			defer wg.Done()
+			env, args := prepareProjectEnv(proj, rootEnvConfig)
+			err := runProject(runCtx, proj, index, action, env, args, len(projects) > 1)
+			if err != nil && err != context.Canceled {
+				fmt.Printf("[SDLC] Module %s exited with error: %v\n", proj.Name, err)
+			}
+		}(p, idx)
 	}
 
 	// Helper to find which project owns a given file path.
@@ -500,7 +585,6 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 			}
 			mu.Unlock()
 
-			// Wait for all goroutines to finish with a timeout
 			done := make(chan struct{})
 			go func() {
 				mu.Lock()
@@ -740,29 +824,13 @@ func filterProjects(projects []engine.Project) ([]engine.Project, error) {
 		return projects, nil
 	}
 
-	// Otherwise return empty list (caller will handle ambiguous case)
-	// Actually, returning all projects here and letting the caller decide
-	// based on count is better for the error message "multiple projects found"
+	// Otherwise return all projects (caller will handle multi-module case)
 	return projects, nil
 }
 
 func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) {
-	// If interactive mode is not possible (e.g. non-terminal), default to all
-	// For now, we assume terminal is available if we are here.
-
-	// Use promptui's Select to implement a multi-select simulation since MultiSelect is not stable in all promptui versions
-	// Or we can use a loop to let user toggle.
-	// But simpler is to list all modules and let user select one or "All".
-	// The user asked to "select multiple projects".
-	// A common pattern with promptui for multiselect is to use a loop or custom template,
-	// but here we can try a simple checklist approach if we want to be fancy,
-	// or just use a loop where user picks modules until they say "Done".
-
-	// Let's implement a loop where user can toggle selection.
-
 	selected := make(map[int]bool)
-	// Default to none selected initially? Or all?
-	// Let's default to all selected initially.
+	// Default to all selected initially
 	for i := range projects {
 		selected[i] = true
 	}
@@ -777,19 +845,10 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 			items = append(items, fmt.Sprintf("%s %s (%s)", prefix, p.Name, p.Path))
 		}
 
-		// Use a custom templates to avoid excessive newlines if needed,
-		// but primarily we want to clear the screen or just rely on promptui's behavior.
-		// However, promptui by default redraws in place if stdout is terminal.
-		// The issue "log every click" might refer to the fact that promptui prints the final selection 
-		// to stdout when you press enter.
-		// To suppress that, we can set HideSelected: true in templates?
-		// But Select struct doesn't have HideSelected. It has HideSelected bool.
-		// Let's try HideSelected: true.
-
 		prompt := promptui.Select{
-			Label: "Select modules to run (Select to toggle)",
-			Items: items,
-			Size:  len(items) + 1,
+			Label:        "Select modules to run (Select to toggle)",
+			Items:        items,
+			Size:         len(items) + 1,
 			HideSelected: true,
 		}
 
@@ -856,10 +915,10 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 func printBanner() {
 	banner := `
    _____ ____  __    ______
-  / ___// __ \/ /   / ____/
+  / ___// __ \\/ /   / ____/
   \__ \/ / / / /   / /     
  ___/ / /_/ / /___/ /___   
-/____/_____/_____/\____/   
+/____/_____/_____/\\____/   
 `
 	fmt.Println(colorCyan + banner + colorReset)
 }

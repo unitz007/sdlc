@@ -159,6 +159,7 @@ func runTask(ctx context.Context, wd, action string) error {
 
 	// Interactive selection if multiple projects found and no specific flags were set
 	if len(selectedProjects) > 1 && !runAllMods && targetMod == "" && len(ignoreMods) == 0 {
+		// This is the case where we want to prompt
 		selectedProjects, err = promptModuleSelection(selectedProjects)
 		if err != nil {
 			return err
@@ -168,6 +169,7 @@ func runTask(ctx context.Context, wd, action string) error {
 	if len(projects) > 1 {
 		fmt.Printf("[SDLC] Multi-module project detected (%d modules):\n", len(projects))
 		for i, p := range projects {
+			// Check if project is in selectedProjects
 			isSelected := false
 			for _, sp := range selectedProjects {
 				if sp.Path == p.Path {
@@ -222,23 +224,24 @@ func runTask(ctx context.Context, wd, action string) error {
 			prefix := fmt.Sprintf("[%s%s%s] ", color, p.Path, colorReset)
 			fmt.Printf(" - %s%s\n", prefix, cmdStr)
 		}
+		// Do not perform any actions in dry-run mode
 		return nil
 	}
 
 	if watchMode {
 		fmt.Printf("[SDLC] Watch mode enabled. Watching for changes in detected projects...\n")
+		// Need to pass original projects list or a map to find correct index for coloring inside watchAndRunLoop?
+		// Currently watchAndRunLoop uses the index from the passed slice.
+		// Let's update watchAndRunLoop to handle coloring consistently too, or pass a color map.
+		// For simplicity, let's just pass selectedProjects and let it run.
+		// But colors might shift if we select subset.
+		// To fix coloring, we can attach color to Project struct or look it up.
+		// For now, let's fix the execution loop first.
 		return watchAndRunLoop(ctx, selectedProjects, projects, action, rootEnvConfig)
 	}
 
 	// Execute for each selected project once
-	// Use a shared output lock to prevent garbled output from concurrent goroutines
-	multi := len(selectedProjects) > 1
-	outputLock := lib.NewOutputLock()
-
 	var wg sync.WaitGroup
-	var writersMu sync.Mutex
-	var writers []*lib.BufferedPrefixWriter
-
 	for i, project := range selectedProjects {
 		wg.Add(1)
 
@@ -253,24 +256,12 @@ func runTask(ctx context.Context, wd, action string) error {
 
 		go func(p engine.Project, index int) {
 			defer wg.Done()
-
 			env, args := prepareProjectEnv(p, rootEnvConfig)
-			writer := runProject(ctx, p, index, action, env, args, multi, outputLock)
-			if writer != nil {
-				writersMu.Lock()
-				writers = append(writers, writer)
-				writersMu.Unlock()
-			}
+			runProject(ctx, p, index, action, env, args, len(selectedProjects) > 1)
 		}(project, originalIdx)
 	}
 
 	wg.Wait()
-
-	// Flush any remaining buffered partial lines from all writers
-	for _, w := range writers {
-		w.Flush()
-	}
-
 	return nil
 }
 
@@ -287,8 +278,6 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 	states := make(map[string]*projectState)
 	var mu sync.Mutex
 
-	outputLock := lib.NewOutputLock()
-
 	// Helper to start (or restart) a project
 	startProject := func(p engine.Project) {
 		mu.Lock()
@@ -296,11 +285,14 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 
 		state, exists := states[p.Path]
 		if exists {
+			// Stop existing
 			state.cancel()
 			state.wg.Wait()
+			// Add a small delay to ensure file handles are released
 			time.Sleep(500 * time.Millisecond)
 		}
 
+		// New context
 		runCtx, cancel := context.WithCancel(ctx)
 		wg := &sync.WaitGroup{}
 		wg.Add(1)
@@ -323,12 +315,11 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 
 		go func() {
 			defer wg.Done()
-
 			env, args := prepareProjectEnv(p, rootEnvConfig)
-			writer := runProject(runCtx, p, idx, action, env, args, len(projects) > 1, outputLock)
-			// Flush any remaining buffered output after the project finishes
-			if writer != nil {
-				writer.Flush()
+			// Pass a derived context that handles cancellation properly
+			err := runProject(runCtx, p, idx, action, env, args, len(projects) > 1)
+			if err != nil && err != context.Canceled {
+				fmt.Printf("[SDLC] Module %s exited with error: %v\n", p.Name, err)
 			}
 		}()
 	}
@@ -351,6 +342,7 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 			}
 			mu.Unlock()
 
+			// Wait for all goroutines to finish with a timeout
 			done := make(chan struct{})
 			go func() {
 				mu.Lock()
@@ -370,6 +362,7 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 			return nil
 
 		case <-ticker.C:
+			// Check for changes
 			for _, p := range projects {
 				mu.Lock()
 				s, ok := states[p.Path]
@@ -398,6 +391,7 @@ func prepareProjectEnv(p engine.Project, rootEnvConfig *config.EnvSettings) (map
 	finalEnv := make(map[string]string)
 	finalArgs := []string{}
 
+	// Apply root config
 	if rootEnvConfig != nil {
 		for k, v := range rootEnvConfig.Env {
 			finalEnv[k] = v
@@ -405,6 +399,7 @@ func prepareProjectEnv(p engine.Project, rootEnvConfig *config.EnvSettings) (map
 		finalArgs = append(finalArgs, rootEnvConfig.Args...)
 	}
 
+	// Apply module config
 	modEnvConfig, err := config.LoadEnvConfig(p.AbsPath)
 	if err == nil && modEnvConfig != nil {
 		for k, v := range modEnvConfig.Env {
@@ -413,18 +408,29 @@ func prepareProjectEnv(p engine.Project, rootEnvConfig *config.EnvSettings) (map
 		finalArgs = append(finalArgs, modEnvConfig.Args...)
 	}
 
+	// Append extra args from CLI
 	if extraArgs != "" {
 		finalArgs = append(finalArgs, strings.Split(extraArgs, " ")...)
 	}
 	return finalEnv, finalArgs
 }
 
-// runProject prepares and executes a single project. When multi is true, it
-// creates a BufferedPrefixWriter using the shared outputLock to prevent
-// interleaved output with other concurrent projects. It returns the stdout
-// writer (or nil if multi is false) so the caller can Flush() any remaining
-// partial lines after all projects finish.
-func runProject(ctx context.Context, p engine.Project, index int, action string, env map[string]string, args []string, multi bool, outputLock *lib.OutputLock) *lib.BufferedPrefixWriter {
+// flushWriter wraps a PrefixWriter and exposes Flush() while satisfying
+// io.Writer. It is used in runProject so that after command execution
+// completes, any remaining partial lines in the buffer can be emitted.
+type flushWriter struct {
+	pw *PrefixWriter
+}
+
+func (fw *flushWriter) Write(p []byte) (n int, err error) {
+	return fw.pw.Write(p)
+}
+
+func (fw *flushWriter) Flush() error {
+	return fw.pw.Flush()
+}
+
+func runProject(ctx context.Context, p engine.Project, index int, action string, env map[string]string, args []string, multi bool) error {
 	// Clean up .vite-temp if it exists, to prevent EPERM errors on restart
 	viteTemp := filepath.Join(p.AbsPath, "node_modules", ".vite-temp")
 	if _, err := os.Stat(viteTemp); err == nil {
@@ -438,24 +444,29 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 	color := getModuleColor(index)
 	prefix := fmt.Sprintf("[%s%s%s] ", color, p.Path, colorReset)
 	var out, errOut io.Writer
-	var prefixWriter *lib.BufferedPrefixWriter
+	var stdoutFlusher, stderrFlusher *flushWriter
 
 	if multi {
-		prefixWriter = lib.NewBufferedPrefixWriter(os.Stdout, prefix, outputLock)
-		out = prefixWriter
-		errOut = lib.NewBufferedPrefixWriter(os.Stderr, prefix, outputLock)
+		stdoutPW := NewPrefixWriter(os.Stdout, prefix)
+		stderrPW := NewPrefixWriter(os.Stderr, prefix)
+		stdoutFlusher = &flushWriter{pw: stdoutPW}
+		stderrFlusher = &flushWriter{pw: stderrPW}
+		out = stdoutFlusher
+		errOut = stderrFlusher
 	} else {
 		out = os.Stdout
 		errOut = os.Stderr
 		fmt.Printf("[SDLC] Executing %s for module: %s%s%s\n", action, color, p.Path, colorReset)
 	}
 
+	// Construct command arguments string
 	cmdArgsStr := strings.Join(args, " ")
 
+	// Execute command
 	cmdStr, err := p.Task.Command(action)
 	if err != nil {
 		fmt.Fprintf(errOut, "Error getting command: %v\n", err)
-		return prefixWriter
+		return err
 	}
 
 	if cmdArgsStr != "" {
@@ -477,10 +488,28 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 		cmdStr = strings.ReplaceAll(cmdStr, fmt.Sprintf("$%s", k), v)
 	}
 
+	// Run the command
 	if err := runCommand(ctx, cmdStr, p.AbsPath, out, errOut, env); err != nil {
 		fmt.Fprintf(errOut, "Command failed: %v\n", err)
+		// Flush any remaining buffered output before returning.
+		if stdoutFlusher != nil {
+			stdoutFlusher.Flush()
+		}
+		if stderrFlusher != nil {
+			stderrFlusher.Flush()
+		}
+		return err
 	}
-	return prefixWriter
+
+	// Flush any remaining buffered output after the command completes.
+	if stdoutFlusher != nil {
+		stdoutFlusher.Flush()
+	}
+	if stderrFlusher != nil {
+		stderrFlusher.Flush()
+	}
+
+	return nil
 }
 
 // hasChanges checks if any file in root has been modified since sinceTime
@@ -493,18 +522,22 @@ func hasChanges(root string, sinceTime time.Time) (bool, string, error) {
 			return err
 		}
 		if info.IsDir() {
+			// Skip .git, .idea, etc.
 			if strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
 				return filepath.SkipDir
 			}
+			// Skip common build/dependency directories
 			if info.Name() == "node_modules" || info.Name() == "dist" || info.Name() == "build" || info.Name() == "target" || info.Name() == "bin" || info.Name() == "pkg" {
 				return filepath.SkipDir
 			}
 			return nil
 		}
+		// Skip hidden files
 		if strings.HasPrefix(info.Name(), ".") {
 			return nil
 		}
 
+		// Skip log files and other temporary artifacts
 		if strings.HasSuffix(info.Name(), ".log") || strings.HasSuffix(info.Name(), ".tmp") || strings.HasSuffix(info.Name(), ".lock") || strings.HasSuffix(info.Name(), ".pid") || strings.HasSuffix(info.Name(), ".swp") {
 			return nil
 		}
@@ -512,7 +545,7 @@ func hasChanges(root string, sinceTime time.Time) (bool, string, error) {
 		if info.ModTime().After(sinceTime) {
 			changed = true
 			changedFile = path
-			return io.EOF
+			return io.EOF // Stop walking
 		}
 		return nil
 	})
@@ -524,6 +557,7 @@ func hasChanges(root string, sinceTime time.Time) (bool, string, error) {
 }
 
 func filterProjects(projects []engine.Project) ([]engine.Project, error) {
+	// Handle ignore flags
 	if len(ignoreMods) > 0 {
 		if len(projects) <= 1 {
 			return nil, fmt.Errorf("--ignore flag is only supported in multi-module projects")
@@ -558,15 +592,34 @@ func filterProjects(projects []engine.Project) ([]engine.Project, error) {
 		return []engine.Project{}, nil
 	}
 
+	// If only one project exists, default to it
 	if len(projects) == 1 {
 		return projects, nil
 	}
 
+	// Otherwise return empty list (caller will handle ambiguous case)
+	// Actually, returning all projects here and letting the caller decide
+	// based on count is better for the error message "multiple projects found"
 	return projects, nil
 }
 
 func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) {
+	// If interactive mode is not possible (e.g. non-terminal), default to all
+	// For now, we assume terminal is available if we are here.
+
+	// Use promptui's Select to implement a multi-select simulation since MultiSelect is not stable in all promptui versions
+	// Or we can use a loop to let user toggle.
+	// But simpler is to list all modules and let user select one or "All".
+	// The user asked to "select multiple projects".
+	// A common pattern with promptui for multiselect is to use a loop or custom template,
+	// but here we can try a simple checklist approach if we want to be fancy,
+	// or just use a loop where user picks modules until they say "Done".
+
+	// Let's implement a loop where user can toggle selection.
+
 	selected := make(map[int]bool)
+	// Default to none selected initially? Or all?
+	// Let's default to all selected initially.
 	for i := range projects {
 		selected[i] = true
 	}
@@ -581,10 +634,19 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 			items = append(items, fmt.Sprintf("%s %s (%s)", prefix, p.Name, p.Path))
 		}
 
+		// Use a custom templates to avoid excessive newlines if needed,
+		// but primarily we want to clear the screen or just rely on promptui's behavior.
+		// However, promptui by default redraws in place if stdout is terminal.
+		// The issue "log every click" might refer to the fact that promptui prints the final selection 
+		// to stdout when you press enter.
+		// To suppress that, we can set HideSelected: true in templates?
+		// But Select struct doesn't have HideSelected. It has HideSelected bool.
+		// Let's try HideSelected: true.
+
 		prompt := promptui.Select{
-			Label:       "Select modules to run (Select to toggle)",
-			Items:       items,
-			Size:        len(items) + 1,
+			Label: "Select modules to run (Select to toggle)",
+			Items: items,
+			Size:  len(items) + 1,
 			HideSelected: true,
 		}
 
@@ -597,6 +659,7 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 			break
 		}
 
+		// Toggle selection
 		projectIdx := idx - 1
 		selected[projectIdx] = !selected[projectIdx]
 	}
@@ -606,6 +669,36 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 		if selected[i] {
 			result = append(result, p)
 		} else {
+			// Add to ignore list for display purposes later if we want to show ignored status
+			// But the current logic in filterProjects handles ignores.
+			// Here we are returning the *selected* projects.
+			// If we want the "Ignored" UI to show up in the list later, we need to
+			// ensure the unselected ones are treated as "ignored".
+			// The current executeTask logic prints "Multi-module project detected" based on the *initial* detection,
+			// but then iterates over *projects* (which is the full list) to show status.
+			// Wait, executeTask calls filterProjects -> selectedProjects.
+			// Then promptModuleSelection filters *selectedProjects* further.
+			// Then executeTask iterates over *selectedProjects* to run.
+
+			// The "Multi-module project detected" block at the top of executeTask prints ALL projects
+			// and checks ignoreMods global to show [IGNORED].
+			// If we filter here, we are effectively removing them from the execution list.
+			// If we want the [IGNORED] UI to appear, we should probably update the ignoreMods list
+			// or change how executeTask works.
+
+			// Let's update the global ignoreMods list based on unselected items so the UI reflects it?
+			// But promptModuleSelection is called AFTER the initial list printing in executeTask?
+			// Actually, let's check where promptModuleSelection is called.
+			// It is called lines 192-198.
+			// The initial printing happens BEFORE that (lines 142-155).
+			// So the initial list is already printed.
+			// If we want to show the ignored status, we might need to print the list AGAIN or
+			// rely on the user knowing what they selected.
+
+			// The user requirement: "we need to be able to select multiple projects to run in the interactive section and the others ignored"
+			// Implicitly, this means the execution should respect the selection.
+
+			// Let's return the selected subset.
 			ignoreMods = append(ignoreMods, p.Path)
 		}
 	}
@@ -621,7 +714,7 @@ func printBanner() {
 	banner := `
    _____ ____  __    ______
   / ___// __ \\/ /   / ____/
-  \__ \/ / / / /   / /     
+  \\__ \\/ / / / /   / /     
  ___/ / /_/ / /___/ /___   
 /____/_____/_____/\\____/   
 `

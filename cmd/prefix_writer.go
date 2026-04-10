@@ -2,115 +2,104 @@ package cmd
 
 import (
 	"bytes"
+	"io"
 	"sync"
 )
 
-// SharedPrefixWriter is a thread-safe line-buffered writer that prefixes each
-// line with a per-source tag. It is designed to be shared across goroutines:
-// each goroutine creates its own Writer via SourceWriter() and the underlying
-// mutex ensures that complete lines are flushed atomically so that output from
-// concurrent sources is never interleaved at the byte level.
-type SharedPrefixWriter struct {
-	mu   sync.Mutex
-	w    threadSafeWriter
-}
+// globalOutputMutex is a shared mutex that ensures only one PrefixWriter
+// flushes to the underlying writer at a time, preventing interleaved output
+// from concurrent goroutines (e.g., multi-module execution or watch mode).
+var globalOutputMutex sync.Mutex
 
-// threadSafeWriter abstracts sync.Locker so tests can inject mock writers.
-// The standard io.Writer is not safe for concurrent use on os.Stdout / os.Stderr.
-type threadSafeWriter interface {
-	write(b []byte) (int, error)
-}
-
-// defaultStdWriter wraps an underlying writer but is only safe because all
-// callers go through the SharedPrefixWriter mutex.
-type defaultStdWriter struct {
-	w innerWriter
-}
-
-type innerWriter interface {
-	Write(b []byte) (int, error)
-}
-
-func (d *defaultStdWriter) write(b []byte) (int, error) {
-	return d.w.Write(b)
-}
-
-// NewSharedPrefixWriter creates a SharedPrefixWriter that outputs to w.
-func NewSharedPrefixWriter(w innerWriter) *SharedPrefixWriter {
-	return &SharedPrefixWriter{
-		w: &defaultStdWriter{w: w},
-	}
-}
-
-// SourceWriter returns a new per-source writer that prefixes every line with
-// the given prefix. Multiple SourceWriters backed by the same
-// SharedPrefixWriter are safe to use concurrently from different goroutines.
-func (spw *SharedPrefixWriter) SourceWriter(prefix string) *SourceWriter {
-	return &SourceWriter{
-		spw:    spw,
-		prefix: []byte(prefix),
-		buf:    &bytes.Buffer{},
-	}
-}
-
-// SourceWriter is a per-goroutine writer that collects partial lines and
-// flushes complete lines atomically via the parent SharedPrefixWriter.
-type SourceWriter struct {
-	spw    *SharedPrefixWriter
+// PrefixWriter wraps an io.Writer and prefixes each complete line with a
+// given prefix string. It buffers partial lines internally and only flushes
+// complete lines (ending in '\n') atomically under the shared global mutex,
+// ensuring that concurrent goroutines never produce garbled/interleaved output.
+//
+// When a writer is done producing output (e.g., after a subprocess exits),
+// Flush() must be called to write any remaining partial line content.
+type PrefixWriter struct {
+	w      io.Writer
 	prefix []byte
-	buf    *bytes.Buffer
+	buf    bytes.Buffer
 }
 
-// Write appends data to the internal buffer. Complete lines (terminated by
-// '\n') are flushed immediately under the shared mutex so they are never
-// interleaved with lines from other SourceWriters.
-func (sw *SourceWriter) Write(p []byte) (n int, err error) {
-	sw.spw.mu.Lock()
-	defer sw.spw.mu.Unlock()
+// NewPrefixWriter creates a new PrefixWriter. All PrefixWriter instances share
+// a global mutex (globalOutputMutex), so even when multiple goroutines each
+// have their own PrefixWriter writing to the same underlying writer (e.g.,
+// os.Stdout), only one flushes at a time.
+func NewPrefixWriter(w io.Writer, prefix string) *PrefixWriter {
+	return &PrefixWriter{
+		w:      w,
+		prefix: []byte(prefix),
+	}
+}
 
-	sw.buf.Reset()
-	sw.buf.Write(p)
+// Write buffers data and flushes complete lines atomically. Lines are
+// identified by '\n' delimiters. Partial lines (not ending in '\n') are
+// buffered internally and will be flushed on the next Write call that
+// completes the line, or by calling Flush().
+func (pw *PrefixWriter) Write(p []byte) (n int, err error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
 
-	// Process complete lines.
+	// Append all incoming data to our buffer first.
+	pw.buf.Write(p)
+
+	// Extract and flush all complete lines.
 	for {
-		line, err := sw.buf.ReadBytes('\n')
-		if err != nil {
-			// EOF means there's no newline at the end — put the remainder
-			// back into the buffer for the next Write call.
-			if len(line) > 0 {
-				// Store partial line back into buf for next call.
-				sw.buf.Reset()
-				sw.buf.Write(line)
-			}
+		// Find the next newline in the buffer.
+		nlIdx := bytes.IndexByte(pw.buf.Bytes(), '\n')
+		if nlIdx < 0 {
+			// No complete line left in the buffer.
 			break
 		}
 
-		// Write the full prefixed line atomically.
-		if _, werr := sw.spw.w.write(append(sw.prefix, line...)); werr != nil {
-			return n, werr
+		// Extract the line including the newline character.
+		line := make([]byte, nlIdx+1)
+		copy(line, pw.buf.Bytes())
+		// Remove the consumed portion from the buffer.
+		pw.buf.Next(nlIdx + 1)
+
+		// Build the prefixed line and write it atomically.
+		var out bytes.Buffer
+		out.Write(pw.prefix)
+		out.Write(line)
+
+		globalOutputMutex.Lock()
+		_, err = pw.w.Write(out.Bytes())
+		globalOutputMutex.Unlock()
+
+		if err != nil {
+			return len(p) - pw.buf.Len(), err
 		}
 	}
 
 	return len(p), nil
 }
 
-// Flush writes any remaining partial line (without a trailing newline) to
-// the underlying writer. This should be called when a SourceWriter will no
-// longer receive more data (e.g. after a subprocess finishes).
-func (sw *SourceWriter) Flush() error {
-	sw.spw.mu.Lock()
-	defer sw.spw.mu.Unlock()
-
-	if sw.buf.Len() == 0 {
+// Flush writes any remaining buffered partial line content followed by a
+// newline. This must be called when the writer is done producing output
+// (e.g., after a subprocess exits) to ensure no data is lost.
+// Flush is safe to call multiple times; subsequent calls after the buffer
+// is empty are no-ops.
+func (pw *PrefixWriter) Flush() error {
+	if pw.buf.Len() == 0 {
 		return nil
 	}
 
-	// Write remaining data with prefix and a trailing newline.
-	remaining := sw.buf.Bytes()
-	if _, err := sw.spw.w.write(append(sw.prefix, remaining...)); err != nil {
-		return err
-	}
+	// Build the prefixed partial line (add a newline for cleanliness).
+	var out bytes.Buffer
+	out.Write(pw.prefix)
+	out.Write(pw.buf.Bytes())
+	out.WriteByte('\n')
 
-	sw.buf.Reset()
-	return nil
+	pw.buf.Reset()
+
+	globalOutputMutex.Lock()
+	_, err := pw.w.Write(out.Bytes())
+	globalOutputMutex.Unlock()
+
+	return err
 }

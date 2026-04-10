@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sdlc/lib"
+	"sort"
 	"strings"
 )
 
@@ -14,6 +15,15 @@ const (
 	configFileName = ".sdlc.json"
 	envConfigName  = ".sdlc.conf"
 )
+
+// builtInActions are the reserved action names that cannot be used in the custom map.
+var builtInActions = map[string]bool{
+	"run":     true,
+	"test":    true,
+	"build":   true,
+	"install": true,
+	"clean":   true,
+}
 
 // EnvSettings represents the configuration from .sdlc.conf
 type EnvSettings struct {
@@ -154,6 +164,10 @@ func Load(confDir string) (map[string]lib.Task, error) {
 		tasks[k] = v.toTask()
 	}
 
+	if err := Validate(tasks, configFile); err != nil {
+		return nil, err
+	}
+
 	return tasks, nil
 }
 
@@ -184,7 +198,114 @@ func LoadLocal(confDir string) (map[string]lib.Task, error) {
 		tasks[k] = v.toTask()
 	}
 
+	if err := Validate(tasks, configPath); err != nil {
+		return nil, err
+	}
+
 	return tasks, nil
+}
+
+// validationErrors collects multiple validation errors and returns them as a single error.
+type validationErrors []string
+
+func (ve validationErrors) Error() string {
+	sort.Strings(ve)
+	return strings.Join(ve, "\n")
+}
+
+// isEmptyTask returns true if the task has no commands defined (no built-in
+// lifecycle commands, no custom actions, and no hooks).
+func isEmptyTask(t lib.Task) bool {
+	if t.Run != "" || t.Test != "" || t.Build != "" || t.Install != "" || t.Clean != "" {
+		return false
+	}
+	if len(t.Custom) > 0 {
+		return false
+	}
+	if t.Hooks.Pre != nil && len(t.Hooks.Pre) > 0 {
+		return false
+	}
+	if t.Hooks.Post != nil && len(t.Hooks.Post) > 0 {
+		return false
+	}
+	return true
+}
+
+// allActions returns the set of all valid action names for a task (built-in + custom).
+func allActions(t lib.Task) map[string]bool {
+	actions := make(map[string]bool)
+	for name := range builtInActions {
+		actions[name] = true
+	}
+	for name := range t.Custom {
+		actions[name] = true
+	}
+	return actions
+}
+
+// Validate checks a parsed task map for configuration errors.
+// It collects all validation errors and returns them as a single error.
+// filePath is used in error messages to identify the source config file.
+func Validate(tasks map[string]lib.Task, filePath string) error {
+	var errs validationErrors
+
+	for taskKey, task := range tasks {
+		// 1. No empty task entries
+		if isEmptyTask(task) {
+			errs = append(errs, fmt.Sprintf("%s: task %q has no commands defined", filePath, taskKey))
+			continue // skip further checks on this empty task
+		}
+
+		// 2. Custom action names must not collide with built-in names
+		for customName := range task.Custom {
+			if builtInActions[customName] {
+				errs = append(errs, fmt.Sprintf("%s: task %q has custom action %q that conflicts with a built-in action", filePath, taskKey, customName))
+			}
+
+			// 3. Custom map values must be non-empty strings
+			if strings.TrimSpace(task.Custom[customName]) == "" {
+				errs = append(errs, fmt.Sprintf("%s: task %q has custom action %q with an empty command", filePath, taskKey, customName))
+			}
+		}
+
+		// 4. Hook command values must be non-empty strings
+		if task.Hooks.Pre != nil {
+			for action, cmd := range task.Hooks.Pre {
+				if strings.TrimSpace(cmd) == "" {
+					errs = append(errs, fmt.Sprintf("%s: task %q has pre-hook for action %q with an empty command", filePath, taskKey, action))
+				}
+			}
+		}
+		if task.Hooks.Post != nil {
+			for action, cmd := range task.Hooks.Post {
+				if strings.TrimSpace(cmd) == "" {
+					errs = append(errs, fmt.Sprintf("%s: task %q has post-hook for action %q with an empty command", filePath, taskKey, action))
+				}
+			}
+		}
+
+		// 5. Hook action names must reference valid actions (built-in or custom)
+		validActions := allActions(task)
+		if task.Hooks.Pre != nil {
+			for action := range task.Hooks.Pre {
+				if !validActions[action] {
+					errs = append(errs, fmt.Sprintf("%s: task %q has pre-hook referencing undefined action %q", filePath, taskKey, action))
+				}
+			}
+		}
+		if task.Hooks.Post != nil {
+			for action := range task.Hooks.Post {
+				if !validActions[action] {
+					errs = append(errs, fmt.Sprintf("%s: task %q has post-hook referencing undefined action %q", filePath, taskKey, action))
+				}
+			}
+		}
+	}
+
+	if len(errs) == 0 {
+		return nil
+	}
+	return errs
 }
 
 func getConfigFile(confDir string) (string, error) {

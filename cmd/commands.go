@@ -18,6 +18,7 @@ import (
 	"sdlc/engine"
 	"sdlc/lib"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 )
@@ -38,6 +39,11 @@ const (
 	debounceInterval = 1 * time.Second
 )
 
+// watchDebounceInterval is the time to wait after the last file event
+// before triggering a restart. This coalesces rapid successive saves
+// (e.g., editor auto-save) into a single restart.
+const watchDebounceInterval = 300 * time.Millisecond
+
 var moduleColors = []string{
 	colorCyan,
 	colorGreen,
@@ -48,6 +54,51 @@ var moduleColors = []string{
 
 func getModuleColor(index int) string {
 	return moduleColors[index%len(moduleColors)]
+}
+
+// skippedDirs are directory names that should never be watched or trigger restarts.
+var skippedDirs = map[string]bool{
+	".git":         true,
+	".idea":        true,
+	".planner":     true,
+	"node_modules": true,
+	"dist":         true,
+	"build":        true,
+	"target":       true,
+	"bin":          true,
+	"pkg":          true,
+}
+
+// skippedExtensions are file extensions that should not trigger restarts.
+var skippedExtensions = map[string]bool{
+	".log":  true,
+	".tmp":  true,
+	".lock": true,
+	".pid":  true,
+	".swp":  true,
+}
+
+// shouldSkipPath returns true if the file or directory at the given path
+// should be ignored by the watcher.
+func shouldSkipPath(path string, isDir bool) bool {
+	base := filepath.Base(path)
+
+	// Skip hidden files and directories (but not "." itself)
+	if strings.HasPrefix(base, ".") && base != "." {
+		return true
+	}
+
+	if isDir {
+		return skippedDirs[base]
+	}
+
+	// Skip files with ignored extensions
+	ext := filepath.Ext(base)
+	if skippedExtensions[ext] {
+		return true
+	}
+
+	return false
 }
 
 func init() {
@@ -235,7 +286,7 @@ func runTask(ctx context.Context, wd, action string) error {
 
 	if watchMode {
 		fmt.Printf("[SDLC] Watch mode enabled. Watching for changes in detected projects...\n")
-		return watchAndRunLoop(ctx, selectedProjects, projects, action, rootEnvConfig, wd)
+		return watchAndRunLoop(ctx, selectedProjects, projects, action, rootEnvConfig)
 	}
 
 	// Execute for each selected project once
@@ -263,77 +314,84 @@ func runTask(ctx context.Context, wd, action string) error {
 	return nil
 }
 
-// projectState tracks the running state of a module in watch mode.
-type projectState struct {
-	cancel  context.CancelFunc
-	wg      *sync.WaitGroup
-	lastMod time.Time
+// addWatchedDir recursively adds a directory tree to the fsnotify watcher,
+// skipping directories and files that match the exclusion rules.
+func addWatchedDir(w *fsnotify.Watcher, root string) error {
+	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if !info.IsDir() {
+			return nil
+		}
+
+		if shouldSkipPath(path, true) {
+			return filepath.SkipDir
+		}
+
+		if err := w.Add(path); err != nil {
+			// Log but don't fail — some directories may not be watchable
+			fmt.Printf("[SDLC] Warning: could not watch %s: %v\n", path, err)
+			return nil
+		}
+
+		return nil
+	})
 }
 
-// watchAndRunLoop implements smart partial restarts with dependency cascading,
-// root directory change propagation, config file monitoring, and debounce.
-func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects []engine.Project, action string, rootEnvConfig *config.EnvSettings, workDir string) error {
+// watchAndRunLoop uses fsnotify to watch project directories for file changes
+// and restarts projects when relevant files are modified. It debounces rapid
+// successive file events into a single restart per 300ms window.
+func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects []engine.Project, action string, rootEnvConfig *config.EnvSettings) error {
 	fmt.Println("[SDLC] Starting smart watchAndRunLoop")
 	defer fmt.Println("[SDLC] Exiting watchAndRunLoop")
+
+	type projectState struct {
+		cancel    context.CancelFunc
+		wg        *sync.WaitGroup
+		lastMod   time.Time
+		debounce  *time.Timer
+		changedFile string
+	}
 
 	states := make(map[string]*projectState)
 	var mu sync.Mutex
 
-	// --- Build dependency graph ---
-	// moduleDeps maps each selected project path to its declared dependencies (from .sdlc.conf)
-	moduleDeps := make(map[string][]string)
-	// Load per-module env config to discover dependencies
-	moduleEnvConfigs := make(map[string]*config.EnvSettings)
-	for _, p := range projects {
-		modCfg, err := config.LoadEnvConfig(p.AbsPath)
-		if err != nil {
-			fmt.Printf("[SDLC] Warning: failed to load config for %s: %v\n", p.Path, err)
-			modCfg = &config.EnvSettings{}
-		}
-		if modCfg == nil {
-			modCfg = &config.EnvSettings{}
-		}
-		moduleEnvConfigs[p.Path] = modCfg
-		if len(modCfg.Depends) > 0 {
-			moduleDeps[p.Path] = modCfg.Depends
-		}
+	// Create a single fsnotify watcher for all projects
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return fmt.Errorf("failed to create file watcher: %w", err)
 	}
+	defer watcher.Close()
 
-	// Build reverse-dependency map: reverseDeps[depPath] = list of paths that depend on it
-	reverseDeps := make(map[string][]string)
-	for _, p := range projects {
-		if deps, ok := moduleDeps[p.Path]; ok {
-			for _, dep := range deps {
-				reverseDeps[dep] = append(reverseDeps[dep], p.Path)
+	// Build a map from watched directory to the project that owns it
+	// (a directory may belong to only one project since projects have distinct paths)
+	dirToProject := make(map[string]*engine.Project)
+
+	for i := range projects {
+		p := &projects[i]
+		if err := addWatchedDir(watcher, p.AbsPath); err != nil {
+			fmt.Printf("[SDLC] Warning: error watching %s: %v\n", p.AbsPath, err)
+		}
+		// Walk again to populate dirToProject map
+		_ = filepath.Walk(p.AbsPath, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
 			}
-		}
-	}
-
-	// Log dependency information
-	for _, p := range projects {
-		if deps, ok := moduleDeps[p.Path]; ok {
-			fmt.Printf("[SDLC] %s depends on: %s\n", p.Path, strings.Join(deps, ", "))
-		}
-	}
-
-	// --- Debounce state ---
-	// pendingRestart tracks modules that have changes detected but not yet acted on.
-	// The value is the time of the first detected change; restart is scheduled after debounceInterval.
-	pendingRestart := make(map[string]time.Time)
-
-	// Helper to resolve a module path to the full Project, checking selected projects.
-	resolveProject := func(path string) (engine.Project, bool) {
-		for _, p := range projects {
-			if p.Path == path {
-				return p, true
+			if !info.IsDir() {
+				return nil
 			}
-		}
-		return engine.Project{}, false
+			if shouldSkipPath(path, true) {
+				return filepath.SkipDir
+			}
+			dirToProject[path] = p
+			return nil
+		})
 	}
 
-	// Helper to restart a single module and log the reason.
-	restartModule := func(p engine.Project, reason string) {
-		fmt.Printf("[SDLC] Restarting %s: %s\n", p.Path, reason)
+	// Helper to start (or restart) a project
+	startProject := func(p engine.Project) {
 		mu.Lock()
 		defer mu.Unlock()
 
@@ -464,15 +522,65 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 		}(p, idx)
 	}
 
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
+	// Helper to find which project owns a given file path.
+	// It walks up the directory tree to find the longest matching watched directory.
+	findProject := func(filePath string) *engine.Project {
+		dir := filepath.Dir(filePath)
+		for {
+			if p, ok := dirToProject[dir]; ok {
+				return p
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+		return nil
+	}
+
+	// Helper to handle a file event for a project with debouncing
+	handleEvent := func(filePath string, p *engine.Project) {
+		mu.Lock()
+		state, ok := states[p.Path]
+		if !ok {
+			mu.Unlock()
+			return
+		}
+
+		// Store the latest changed file name
+		state.changedFile = filePath
+
+		// Reset debounce timer
+		if state.debounce != nil {
+			state.debounce.Stop()
+		}
+		state.debounce = time.AfterFunc(watchDebounceInterval, func() {
+			mu.Lock()
+			changedFile := state.changedFile
+			if state.debounce != nil {
+				state.debounce.Stop()
+				state.debounce = nil
+			}
+			mu.Unlock()
+
+			fmt.Printf("\n[SDLC] File change detected: %s in %s. Restarting module...\n", filepath.Base(changedFile), p.Path)
+			startProject(*p)
+		})
+		mu.Unlock()
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			fmt.Println("[SDLC] Context cancelled, exiting watch loop")
+
+			// Stop all debounce timers
 			mu.Lock()
 			for _, s := range states {
+				if s.debounce != nil {
+					s.debounce.Stop()
+				}
 				s.cancel()
 			}
 			mu.Unlock()
@@ -495,79 +603,55 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 			}
 			return nil
 
-		case <-ticker.C:
-			now := time.Now()
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return nil
+			}
 
-			// --- Check root directory for changes (propagate to all modules) ---
-			changed, changedFile, err := hasChanges(workDir, statesRootLastMod())
+			// Only react to Write and Create events
+			if event.Op&(fsnotify.Write|fsnotify.Create) == 0 {
+				continue
+			}
+
+			// Check if the file should be skipped
+			info, err := os.Stat(event.Name)
 			if err != nil {
-				fmt.Printf("[SDLC] Watch error in root directory: %v\n", err)
-			} else if changed && changedFile != "" && !isChildOfAnyModule(changedFile) {
-				// Root change not belonging to any specific module — restart all
-				fmt.Printf("\n[SDLC] File change detected in root: %s. Restarting all modules...\n", filepath.Base(changedFile))
-				for _, p := range projects {
-					restartModule(p, fmt.Sprintf("root file %s changed", filepath.Base(changedFile)))
-				}
-				// Clear all pending restarts since we just restarted everything
-				for k := range pendingRestart {
-					delete(pendingRestart, k)
+				continue
+			}
+
+			if info.IsDir() {
+				// If a new directory was created, add it to the watcher
+				if event.Op&fsnotify.Create != 0 && !shouldSkipPath(event.Name, true) {
+					if err := watcher.Add(event.Name); err == nil {
+						// Find which project this directory belongs to
+						// by walking up from the parent of the new directory
+						p := findProject(event.Name)
+						if p != nil {
+							dirToProject[event.Name] = p
+						}
+					}
 				}
 				continue
 			}
 
-			// --- Check each module for changes ---
-			for _, p := range projects {
-				mu.Lock()
-				s, ok := states[p.Path]
-				mu.Unlock()
-
-				if !ok {
-					continue
-				}
-
-				changed, changedFile, err := hasChanges(p.AbsPath, s.lastMod)
-				if err != nil {
-					fmt.Printf("[SDLC] Watch error in %s: %v\n", p.Path, err)
-					continue
-				}
-
-				if changed {
-					// Record pending restart with debounce
-					if _, alreadyPending := pendingRestart[p.Path]; !alreadyPending {
-						pendingRestart[p.Path] = now
-						if changedFile != "" {
-							fmt.Printf("\n[SDLC] File change detected: %s in %s (debouncing)...\n", filepath.Base(changedFile), p.Path)
-						} else {
-							fmt.Printf("\n[SDLC] File change detected in %s (debouncing)...\n", p.Path)
-						}
-					}
-
-					// Update the lastMod time immediately so we don't re-detect
-					// the same file on the next tick
-					mu.Lock()
-					if state, exists := states[p.Path]; exists {
-						state.lastMod = time.Now()
-					}
-					mu.Unlock()
-				}
+			// Skip ignored files
+			if shouldSkipPath(event.Name, false) {
+				continue
 			}
 
-			// --- Process debounced restarts ---
-			var modulesToRestart []string
-			for modPath, firstChange := range pendingRestart {
-				if now.Sub(firstChange) >= debounceInterval {
-					modulesToRestart = append(modulesToRestart, modPath)
-				}
+			// Find the project this file belongs to
+			p := findProject(event.Name)
+			if p == nil {
+				continue
 			}
 
-			// Restart modules that have passed the debounce window
-			for _, modPath := range modulesToRestart {
-				delete(pendingRestart, modPath)
+			handleEvent(event.Name, p)
 
-				if p, ok := resolveProject(modPath); ok {
-					restartWithCascade(p, "file change detected")
-				}
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return nil
 			}
+			fmt.Printf("[SDLC] Watcher error: %v\n", err)
 		}
 	}
 }
@@ -659,63 +743,6 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 		return err
 	}
 	return nil
-}
-
-// hasChanges checks if any file in root has been modified since sinceTime.
-// It watches SDLC config files (.sdlc.conf, .sdlc.json) in addition to
-// regular source files, while still skipping hidden directories and build artifacts.
-func hasChanges(root string, sinceTime time.Time) (bool, string, error) {
-	var changed bool
-	var changedFile string
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			// Skip known hidden/special directories
-			if strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
-				// Skip all dot-directories (including .git, .idea, .planner, etc.)
-				return filepath.SkipDir
-			}
-			// Skip common build/dependency directories
-			if info.Name() == "node_modules" || info.Name() == "dist" || info.Name() == "build" || info.Name() == "target" || info.Name() == "bin" || info.Name() == "pkg" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		// Allow SDLC config files through (they are dot-prefixed files, not directories)
-		if info.Name() == ".sdlc.conf" || info.Name() == ".sdlc.json" {
-			if info.ModTime().After(sinceTime) {
-				changed = true
-				changedFile = path
-				return io.EOF // Stop walking
-			}
-			return nil
-		}
-
-		// Skip other hidden files
-		if strings.HasPrefix(info.Name(), ".") {
-			return nil
-		}
-
-		// Skip log files and other temporary artifacts
-		if strings.HasSuffix(info.Name(), ".log") || strings.HasSuffix(info.Name(), ".tmp") || strings.HasSuffix(info.Name(), ".lock") || strings.HasSuffix(info.Name(), ".pid") || strings.HasSuffix(info.Name(), ".swp") {
-			return nil
-		}
-
-		if info.ModTime().After(sinceTime) {
-			changed = true
-			changedFile = path
-			return io.EOF // Stop walking
-		}
-		return nil
-	})
-
-	if err == io.EOF {
-		return true, changedFile, nil
-	}
-	return changed, "", err
 }
 
 // PrefixWriter wraps an io.Writer and prefixes each line with a given prefix
@@ -844,6 +871,36 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 		if selected[i] {
 			result = append(result, p)
 		} else {
+			// Add to ignore list for display purposes later if we want to show ignored status
+			// But the current logic in filterProjects handles ignores.
+			// Here we are returning the *selected* projects.
+			// If we want the "Ignored" UI to show up in the list later, we need to
+			// ensure the unselected ones are treated as "ignored".
+			// The current executeTask logic prints "Multi-module project detected" based on the *initial* detection,
+			// but then iterates over *projects* (which is the full list) to show status.
+			// Wait, executeTask calls filterProjects -> selectedProjects.
+			// Then promptModuleSelection filters *selectedProjects* further.
+			// Then executeTask iterates over *selectedProjects* to run.
+
+			// The "Multi-module project detected" block at the top of executeTask prints ALL projects
+			// and checks ignoreMods global to show [IGNORED].
+			// If we filter here, we are effectively removing them from the execution list.
+			// If we want the [IGNORED] UI to appear, we should probably update the ignoreMods list
+			// or change how executeTask works.
+
+			// Let's update the global ignoreMods list based on unselected items so the UI reflects it?
+			// But promptModuleSelection is called AFTER the initial list printing in executeTask?
+			// Actually, let's check where promptModuleSelection is called.
+			// It is called lines 192-198.
+			// The initial printing happens BEFORE that (lines 142-155).
+			// So the initial list is already printed.
+			// If we want to show the ignored status, we might need to print the list AGAIN or
+			// rely on the user knowing what they selected.
+
+			// The user requirement: "we need to be able to select multiple projects to run in the interactive section and the others ignored"
+			// Implicitly, this means the execution should respect the selection.
+
+			// Let's return the selected subset.
 			ignoreMods = append(ignoreMods, p.Path)
 		}
 	}

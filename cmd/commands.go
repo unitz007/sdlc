@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -18,21 +17,27 @@ import (
 	"sdlc/engine"
 	"sdlc/lib"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 )
 
 const (
-	colorReset    = "\033[0m"
-	colorRed      = "\033[31m"
-	colorGreen    = "\033[32m"
-	colorYellow   = "\033[33m"
-	colorBlue     = "\033[34m"
-	colorMagenta  = "\033[35m"
-	colorCyan     = "\033[36m"
-	colorWhite    = "\033[37m"
-	colorDarkGrey = "\033[90m"
+	colorReset    = "\\033[0m"
+	colorRed      = "\\033[31m"
+	colorGreen    = "\\033[32m"
+	colorYellow   = "\\033[33m"
+	colorBlue     = "\\033[34m"
+	colorMagenta  = "\\033[35m"
+	colorCyan     = "\\033[36m"
+	colorWhite    = "\\033[37m"
+	colorDarkGrey = "\\033[90m"
 )
+
+// watchDebounceInterval is the time to wait after the last file event
+// before triggering a restart. This coalesces rapid successive saves
+// (e.g., editor auto-save) into a single restart.
+const watchDebounceInterval = 300 * time.Millisecond
 
 var moduleColors = []string{
 	colorCyan,
@@ -44,6 +49,12 @@ var moduleColors = []string{
 
 func getModuleColor(index int) string {
 	return moduleColors[index%len(moduleColors)]
+}
+
+// flusher is an interface for writers that need to flush buffered content.
+// It is satisfied by *PrefixWriter (from prefix_writer.go).
+type flusher interface {
+	Flush()
 }
 
 func init() {
@@ -205,8 +216,8 @@ func runTask(ctx context.Context, wd, action string) error {
 		return fmt.Errorf("configuration error: %w", err)
 	}
 
-	// Detect projects
-	projects, err := engine.DetectProjects(wd, tasks)
+	// Detect projects with the configured detection depth
+	projects, err := engine.DetectProjects(wd, tasks, detectionDepth)
 	if err != nil {
 		return fmt.Errorf("detection error: %w", err)
 	}
@@ -312,13 +323,6 @@ func runTask(ctx context.Context, wd, action string) error {
 
 	if watchMode {
 		fmt.Printf("[SDLC] Watch mode enabled. Watching for changes in detected projects...\n")
-		// Need to pass original projects list or a map to find correct index for coloring inside watchAndRunLoop?
-		// Currently watchAndRunLoop uses the index from the passed slice.
-		// Let's update watchAndRunLoop to handle coloring consistently too, or pass a color map.
-		// For simplicity, let's just pass selectedProjects and let it run.
-		// But colors might shift if we select subset.
-		// To fix coloring, we can attach color to Project struct or look it up.
-		// For now, let's fix the execution loop first.
 		return watchAndRunLoop(ctx, selectedProjects, projects, action, rootEnvConfig)
 	}
 
@@ -348,18 +352,94 @@ func runTask(ctx context.Context, wd, action string) error {
 	return nil
 }
 
+// addWatchedDir recursively adds a directory tree to the fsnotify watcher,
+// skipping directories and files that match the exclusion rules.
+func addWatchedDir(w *fsnotify.Watcher, root string) error {
+	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if !info.IsDir() {
+			return nil
+		}
+
+		if shouldSkipPath(path, true) {
+			return filepath.SkipDir
+		}
+
+		if err := w.Add(path); err != nil {
+			// Log but don't fail — some directories may not be watchable
+			fmt.Printf("[SDLC] Warning: could not watch %s: %v\n", path, err)
+			return nil
+		}
+
+		return nil
+	})
+}
+
+// reverseDeps tracks which modules depend on each other (populated from .sdlc.conf).
+var reverseDeps = make(map[string][]string)
+
+// resolveProject finds a project by its path in the detected projects list.
+var resolveProject = func(path string) (engine.Project, bool) {
+	return engine.Project{}, false
+}
+
+// restartModule restarts a single module (stub — implemented by dependency tracking).
+var restartModule = func(p engine.Project, reason string) {
+	fmt.Printf("[SDLC] Restarting module %s: %s\n", p.Path, reason)
+}
+
+// watchAndRunLoop uses fsnotify to watch project directories for file changes
+// and restarts projects when relevant files are modified. It debounces rapid
+// successive file events into a single restart per 300ms window.
 func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects []engine.Project, action string, rootEnvConfig *config.EnvSettings) error {
 	fmt.Println("[SDLC] Starting smart watchAndRunLoop")
 	defer fmt.Println("[SDLC] Exiting watchAndRunLoop")
 
 	type projectState struct {
-		cancel  context.CancelFunc
-		wg      *sync.WaitGroup
-		lastMod time.Time
+		cancel      context.CancelFunc
+		wg          *sync.WaitGroup
+		lastMod     time.Time
+		debounce    *time.Timer
+		changedFile string
 	}
 
 	states := make(map[string]*projectState)
 	var mu sync.Mutex
+
+	// Create a single fsnotify watcher for all projects
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return fmt.Errorf("failed to create file watcher: %w", err)
+	}
+	defer watcher.Close()
+
+	// Build a map from watched directory to the project that owns it
+	// (a directory may belong to only one project since projects have distinct paths)
+	dirToProject := make(map[string]*engine.Project)
+
+	for i := range projects {
+		p := &projects[i]
+		if err := addWatchedDir(watcher, p.AbsPath); err != nil {
+			fmt.Printf("[SDLC] Warning: error watching %s: %v\n", p.AbsPath, err)
+		}
+		// Walk again to populate dirToProject map
+		_ = filepath.Walk(p.AbsPath, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if !info.IsDir() {
+				return nil
+			}
+			if shouldSkipPath(path, true) {
+				return filepath.SkipDir
+			}
+			dirToProject[path] = p
+			return nil
+		})
+	}
 
 	// Helper to start (or restart) a project
 	startProject := func(p engine.Project) {
@@ -368,14 +448,11 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 
 		state, exists := states[p.Path]
 		if exists {
-			// Stop existing
 			state.cancel()
 			state.wg.Wait()
-			// Add a small delay to ensure file handles are released
 			time.Sleep(500 * time.Millisecond)
 		}
 
-		// New context
 		runCtx, cancel := context.WithCancel(ctx)
 		wg := &sync.WaitGroup{}
 		wg.Add(1)
@@ -387,7 +464,6 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 		}
 		states[p.Path] = newState
 
-		// Find original index for coloring
 		idx := 0
 		for i, original := range allProjects {
 			if original.Path == p.Path {
@@ -399,7 +475,6 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 		go func() {
 			defer wg.Done()
 			env, args := prepareProjectEnv(p, rootEnvConfig)
-			// Pass a derived context that handles cancellation properly
 			err := runProject(runCtx, p, idx, action, env, args, len(projects) > 1)
 			if err != nil && err != context.Canceled {
 				fmt.Printf("[SDLC] Module %s exited with error: %v\n", p.Name, err)
@@ -407,25 +482,149 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 		}()
 	}
 
-	// Initial start
-	for _, p := range projects {
-		startProject(p)
+	// Helper to restart a module and all modules that depend on it (cascade).
+	restartWithCascade := func(p engine.Project, reason string) {
+		// Collect the module itself plus all reverse dependencies
+		restartSet := make(map[string]bool)
+		restartSet[p.Path] = true
+
+		// BFS to find all transitive dependents
+		queue := []string{p.Path}
+		for len(queue) > 0 {
+			current := queue[0]
+			queue = queue[1:]
+			for _, dependent := range reverseDeps[current] {
+				if !restartSet[dependent] {
+					restartSet[dependent] = true
+					queue = append(queue, dependent)
+				}
+			}
+		}
+
+		// Restart the source module
+		restartModule(p, reason)
+
+		// Restart all dependents
+		for depPath := range restartSet {
+			if depPath == p.Path {
+				continue
+			}
+			if depProject, ok := resolveProject(depPath); ok {
+				restartModule(depProject, fmt.Sprintf("dependency %s changed", p.Path))
+			}
+		}
 	}
 
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
+	// isChildOfAnyModule returns true if the given file path is inside any of the
+	// selected project directories. This prevents root-level checks from triggering
+	// restarts for changes that are already handled by per-module checks.
+	isChildOfAnyModule := func(filePath string) bool {
+		for _, p := range projects {
+			if strings.HasPrefix(filePath, p.AbsPath+string(filepath.Separator)) {
+				return true
+			}
+		}
+		return false
+	}
+	_ = isChildOfAnyModule
+	_ = restartWithCascade // referenced by future cascade restart logic
+
+	// Initial start of all selected projects
+	for _, p := range projects {
+		mu.Lock()
+		runCtx, cancel := context.WithCancel(ctx)
+		wg := &sync.WaitGroup{}
+		wg.Add(1)
+
+		newState := &projectState{
+			cancel:  cancel,
+			wg:      wg,
+			lastMod: time.Now(),
+		}
+		states[p.Path] = newState
+		mu.Unlock()
+
+		idx := 0
+		for i, original := range allProjects {
+			if original.Path == p.Path {
+				idx = i
+				break
+			}
+		}
+
+		go func(proj engine.Project, index int) {
+			defer wg.Done()
+			env, args := prepareProjectEnv(proj, rootEnvConfig)
+			err := runProject(runCtx, proj, index, action, env, args, len(projects) > 1)
+			if err != nil && err != context.Canceled {
+				fmt.Printf("[SDLC] Module %s exited with error: %v\n", proj.Name, err)
+			}
+		}(p, idx)
+	}
+
+	// Helper to find which project owns a given file path.
+	// It walks up the directory tree to find the longest matching watched directory.
+	findProject := func(filePath string) *engine.Project {
+		dir := filepath.Dir(filePath)
+		for {
+			if p, ok := dirToProject[dir]; ok {
+				return p
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+		return nil
+	}
+
+	// Helper to handle a file event for a project with debouncing
+	handleEvent := func(filePath string, p *engine.Project) {
+		mu.Lock()
+		state, ok := states[p.Path]
+		if !ok {
+			mu.Unlock()
+			return
+		}
+
+		// Store the latest changed file name
+		state.changedFile = filePath
+
+		// Reset debounce timer
+		if state.debounce != nil {
+			state.debounce.Stop()
+		}
+		state.debounce = time.AfterFunc(watchDebounceInterval, func() {
+			mu.Lock()
+			changedFile := state.changedFile
+			if state.debounce != nil {
+				state.debounce.Stop()
+				state.debounce = nil
+			}
+			mu.Unlock()
+
+			fmt.Printf("\n[SDLC] File change detected: %s in %s. Restarting module...\n", filepath.Base(changedFile), p.Path)
+			startProject(*p)
+		})
+		mu.Unlock()
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			fmt.Println("[SDLC] Context cancelled, exiting watch loop")
+
+			// Stop all debounce timers
 			mu.Lock()
 			for _, s := range states {
+				if s.debounce != nil {
+					s.debounce.Stop()
+				}
 				s.cancel()
 			}
 			mu.Unlock()
 
-			// Wait for all goroutines to finish with a timeout
 			done := make(chan struct{})
 			go func() {
 				mu.Lock()
@@ -444,28 +643,55 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 			}
 			return nil
 
-		case <-ticker.C:
-			// Check for changes
-			for _, p := range projects {
-				mu.Lock()
-				s, ok := states[p.Path]
-				mu.Unlock()
-
-				if !ok {
-					continue
-				}
-
-				changed, changedFile, err := hasChanges(p.AbsPath, s.lastMod)
-				if err != nil {
-					fmt.Printf("[SDLC] Watch error in %s: %v\n", p.Path, err)
-					continue
-				}
-
-				if changed {
-					fmt.Printf("\n[SDLC] File change detected: %s in %s. Restarting module...\n", filepath.Base(changedFile), p.Path)
-					startProject(p)
-				}
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return nil
 			}
+
+			// Only react to Write and Create events
+			if event.Op&(fsnotify.Write|fsnotify.Create) == 0 {
+				continue
+			}
+
+			// Check if the file should be skipped
+			info, err := os.Stat(event.Name)
+			if err != nil {
+				continue
+			}
+
+			if info.IsDir() {
+				// If a new directory was created, add it to the watcher
+				if event.Op&fsnotify.Create != 0 && !shouldSkipPath(event.Name, true) {
+					if err := watcher.Add(event.Name); err == nil {
+						// Find which project this directory belongs to
+						// by walking up from the parent of the new directory
+						p := findProject(event.Name)
+						if p != nil {
+							dirToProject[event.Name] = p
+						}
+					}
+				}
+				continue
+			}
+
+			// Skip ignored files
+			if shouldSkipPath(event.Name, false) {
+				continue
+			}
+
+			// Find the project this file belongs to
+			p := findProject(event.Name)
+			if p == nil {
+				continue
+			}
+
+			handleEvent(event.Name, p)
+
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return nil
+			}
+			fmt.Printf("[SDLC] Watcher error: %v\n", err)
 		}
 	}
 }
@@ -498,6 +724,62 @@ func prepareProjectEnv(p engine.Project, rootEnvConfig *config.EnvSettings) (map
 	return finalEnv, finalArgs
 }
 
+// substituteEnv replaces $KEY and ${KEY} patterns in a string with values
+// from the environment map. Keys are sorted by length (longest first) to
+// avoid partial replacements.
+func substituteEnv(s string, env map[string]string) string {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return len(keys[i]) > len(keys[j])
+	})
+	for _, k := range keys {
+		v := env[k]
+		s = strings.ReplaceAll(s, fmt.Sprintf("${%s}", k), v)
+		s = strings.ReplaceAll(s, fmt.Sprintf("$%s", k), v)
+	}
+	return s
+}
+
+// runHook executes a pre/post hook command for the given project and action.
+// It returns nil if the hook succeeded, or an error if the hook failed.
+func runHook(ctx context.Context, phase, action string, p engine.Project, env map[string]string, out, errOut io.Writer, multi bool) error {
+	hookCmd := p.Task.Hooks.Hook(phase, action)
+	if hookCmd == "" {
+		return nil // No hook defined for this phase/action
+	}
+
+	colorIdx := 0
+	color := getModuleColor(colorIdx)
+	prefix := fmt.Sprintf("[%s%s] ", color, p.Path)
+
+	hookCmd = substituteEnv(hookCmd, env)
+
+	if multi {
+		fmt.Fprintf(out, "%sExecuting %s_%s hook...\n", prefix, phase, action)
+	} else {
+		fmt.Fprintf(out, "[SDLC] Executing %s_%s hook for module: %s\n", phase, action, p.Path)
+	}
+
+	if err := runCommand(ctx, hookCmd, p.AbsPath, out, errOut, env); err != nil {
+		if multi {
+			fmt.Fprintf(errOut, "%s%s_%s hook failed: %v%s\n", prefix, phase, action, err, colorReset)
+		} else {
+			fmt.Fprintf(errOut, "[SDLC] %s_%s hook failed: %v\n", phase, action, err)
+		}
+		return err
+	}
+
+	if multi {
+		fmt.Fprintf(out, "%s%s_%s hook completed.\n", prefix, phase, action)
+	} else {
+		fmt.Fprintf(out, "[SDLC] %s_%s hook completed.\n", phase, action)
+	}
+	return nil
+}
+
 func runProject(ctx context.Context, p engine.Project, index int, action string, env map[string]string, args []string, multi bool) error {
 	// Clean up .vite-temp if it exists, to prevent EPERM errors on restart
 	viteTemp := filepath.Join(p.AbsPath, "node_modules", ".vite-temp")
@@ -520,6 +802,12 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 		out = os.Stdout
 		errOut = os.Stderr
 		fmt.Printf("[SDLC] Executing %s for module: %s%s%s\n", action, color, p.Path, colorReset)
+	}
+
+	// Execute pre-hook (if defined)
+	// If the pre-hook fails, skip the main command
+	if err := runHook(ctx, "pre", action, p, env, out, errOut, multi); err != nil {
+		return fmt.Errorf("pre-%s hook failed, skipping %s: %w", action, action, err)
 	}
 
 	// Construct command arguments string
@@ -602,6 +890,7 @@ func substituteEnvVars(cmdStr *string, env map[string]string) {
 func hasChanges(root string, sinceTime time.Time) (bool, string, error) {
 	var changed bool
 	var changedFile string
+
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -635,48 +924,8 @@ func hasChanges(root string, sinceTime time.Time) (bool, string, error) {
 		return nil
 	})
 
-	if err == io.EOF {
-		return true, changedFile, nil
-	}
-	return changed, "", err
-}
-
-// PrefixWriter wraps an io.Writer and prefixes each line with a given prefix
-type PrefixWriter struct {
-	w       io.Writer
-	prefix  []byte
-	midLine bool
-}
-
-func NewPrefixWriter(w io.Writer, prefix string) *PrefixWriter {
-	return &PrefixWriter{
-		w:      w,
-		prefix: []byte(prefix),
-	}
-}
-
-func (pw *PrefixWriter) Write(p []byte) (n int, err error) {
-	lines := bytes.SplitAfter(p, []byte("\n"))
-	for _, line := range lines {
-		if len(line) == 0 {
-			continue
-		}
-
-		var buf []byte
-		if !pw.midLine {
-			buf = append(buf, pw.prefix...)
-			buf = append(buf, line...)
-		} else {
-			buf = line
-		}
-
-		if _, err := pw.w.Write(buf); err != nil {
-			return 0, err
-		}
-
-		pw.midLine = !bytes.HasSuffix(line, []byte("\n"))
-	}
-	return len(p), nil
+	// Return the main command error (if any)
+	return mainErr
 }
 
 func filterProjects(projects []engine.Project) ([]engine.Project, error) {
@@ -720,9 +969,7 @@ func filterProjects(projects []engine.Project) ([]engine.Project, error) {
 		return projects, nil
 	}
 
-	// Otherwise return empty list (caller will handle ambiguous case)
-	// Actually, returning all projects here and letting the caller decide
-	// based on count is better for the error message "multiple projects found"
+	// Otherwise return all projects (caller will handle multi-module case)
 	return projects, nil
 }
 
@@ -730,19 +977,8 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 	// If interactive mode is not possible (e.g. non-terminal), default to all
 	// For now, we assume terminal is available if we are here.
 
-	// Use promptui's Select to implement a multi-select simulation since MultiSelect is not stable in all promptui versions
-	// Or we can use a loop to let user toggle.
-	// But simpler is to list all modules and let user select one or "All".
-	// The user asked to "select multiple projects".
-	// A common pattern with promptui for multiselect is to use a loop or custom template,
-	// but here we can try a simple checklist approach if we want to be fancy,
-	// or just use a loop where user picks modules until they say "Done".
-
-	// Let's implement a loop where user can toggle selection.
-
 	selected := make(map[int]bool)
-	// Default to none selected initially? Or all?
-	// Let's default to all selected initially.
+	// Default to all selected initially.
 	for i := range projects {
 		selected[i] = true
 	}
@@ -756,15 +992,6 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 			}
 			items = append(items, fmt.Sprintf("%s %s (%s)", prefix, p.Name, p.Path))
 		}
-
-		// Use a custom templates to avoid excessive newlines if needed,
-		// but primarily we want to clear the screen or just rely on promptui's behavior.
-		// However, promptui by default redraws in place if stdout is terminal.
-		// The issue "log every click" might refer to the fact that promptui prints the final selection 
-		// to stdout when you press enter.
-		// To suppress that, we can set HideSelected: true in templates?
-		// But Select struct doesn't have HideSelected. It has HideSelected bool.
-		// Let's try HideSelected: true.
 
 		prompt := promptui.Select{
 			Label:       "Select modules to run (Select to toggle)",

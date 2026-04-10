@@ -28,6 +28,21 @@ var RootCmd = &cobra.Command{
 	Long: `SDLC is a lightweight CLI tool that provides a unified interface 
 for common software development lifecycle commands — run, test, and build — 
 across different project types.`,
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// Resolve working directory for plugin and dynamic command registration
+		wd, err := resolveWorkDir(workDir)
+		if err != nil {
+			return fmt.Errorf("directory error: %w", err)
+		}
+
+		// Register plugin commands (only once)
+		registerPluginCommands(wd)
+
+		// Register dynamic commands from custom actions (only once)
+		registerDynamicCommands(wd)
+
+		return nil
+	},
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
@@ -48,6 +63,7 @@ func init() {
 	RootCmd.PersistentFlags().BoolVarP(&runAllMods, "all", "a", false, "Run command for all detected modules")
 	RootCmd.PersistentFlags().BoolVarP(&watchMode, "watch", "w", false, "Watch for file changes and restart")
 	RootCmd.PersistentFlags().BoolVarP(&dryRun, "dry-run", "n", false, "Show what would happen without executing commands (dry run)")
+	RootCmd.PersistentFlags().IntVarP(&detectionDepth, "depth", "D", 1, "Max recursion depth for project detection (0=root only, 1=root+children, -1=unlimited)")
 }
 
 // SetupDynamicCommands registers dynamic sub-commands from custom actions and

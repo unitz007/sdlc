@@ -52,6 +52,34 @@ func TestCommand_Build(t *testing.T) {
 	}
 }
 
+func TestCommand_Install(t *testing.T) {
+	task := Task{
+		Install: "go mod download",
+	}
+
+	got, err := task.Command("install")
+	if err != nil {
+		t.Fatalf("Command(\"install\") returned unexpected error: %v", err)
+	}
+	if got != task.Install {
+		t.Errorf("Command(\"install\") = %q, want %q", got, task.Install)
+	}
+}
+
+func TestCommand_Clean(t *testing.T) {
+	task := Task{
+		Clean: "go clean -cache",
+	}
+
+	got, err := task.Command("clean")
+	if err != nil {
+		t.Fatalf("Command(\"clean\") returned unexpected error: %v", err)
+	}
+	if got != task.Clean {
+		t.Errorf("Command(\"clean\") = %q, want %q", got, task.Clean)
+	}
+}
+
 func TestCommand_InvalidField(t *testing.T) {
 	task := Task{
 		Run:   "go run main.go",

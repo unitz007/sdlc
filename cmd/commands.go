@@ -32,6 +32,10 @@ const (
 	colorCyan     = "\033[36m"
 	colorWhite    = "\033[37m"
 	colorDarkGrey = "\033[90m"
+
+	// debounceInterval is the time window to coalesce rapid file changes
+	// into a single restart per module.
+	debounceInterval = 1 * time.Second
 )
 
 var moduleColors = []string{
@@ -231,14 +235,7 @@ func runTask(ctx context.Context, wd, action string) error {
 
 	if watchMode {
 		fmt.Printf("[SDLC] Watch mode enabled. Watching for changes in detected projects...\n")
-		// Need to pass original projects list or a map to find correct index for coloring inside watchAndRunLoop?
-		// Currently watchAndRunLoop uses the index from the passed slice.
-		// Let's update watchAndRunLoop to handle coloring consistently too, or pass a color map.
-		// For simplicity, let's just pass selectedProjects and let it run.
-		// But colors might shift if we select subset.
-		// To fix coloring, we can attach color to Project struct or look it up.
-		// For now, let's fix the execution loop first.
-		return watchAndRunLoop(ctx, selectedProjects, projects, action, rootEnvConfig)
+		return watchAndRunLoop(ctx, selectedProjects, projects, action, rootEnvConfig, wd)
 	}
 
 	// Execute for each selected project once
@@ -266,34 +263,87 @@ func runTask(ctx context.Context, wd, action string) error {
 	return nil
 }
 
-func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects []engine.Project, action string, rootEnvConfig *config.EnvSettings) error {
+// projectState tracks the running state of a module in watch mode.
+type projectState struct {
+	cancel  context.CancelFunc
+	wg      *sync.WaitGroup
+	lastMod time.Time
+}
+
+// watchAndRunLoop implements smart partial restarts with dependency cascading,
+// root directory change propagation, config file monitoring, and debounce.
+func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects []engine.Project, action string, rootEnvConfig *config.EnvSettings, workDir string) error {
 	fmt.Println("[SDLC] Starting smart watchAndRunLoop")
 	defer fmt.Println("[SDLC] Exiting watchAndRunLoop")
-
-	type projectState struct {
-		cancel  context.CancelFunc
-		wg      *sync.WaitGroup
-		lastMod time.Time
-	}
 
 	states := make(map[string]*projectState)
 	var mu sync.Mutex
 
-	// Helper to start (or restart) a project
-	startProject := func(p engine.Project) {
+	// --- Build dependency graph ---
+	// moduleDeps maps each selected project path to its declared dependencies (from .sdlc.conf)
+	moduleDeps := make(map[string][]string)
+	// Load per-module env config to discover dependencies
+	moduleEnvConfigs := make(map[string]*config.EnvSettings)
+	for _, p := range projects {
+		modCfg, err := config.LoadEnvConfig(p.AbsPath)
+		if err != nil {
+			fmt.Printf("[SDLC] Warning: failed to load config for %s: %v\n", p.Path, err)
+			modCfg = &config.EnvSettings{}
+		}
+		if modCfg == nil {
+			modCfg = &config.EnvSettings{}
+		}
+		moduleEnvConfigs[p.Path] = modCfg
+		if len(modCfg.Depends) > 0 {
+			moduleDeps[p.Path] = modCfg.Depends
+		}
+	}
+
+	// Build reverse-dependency map: reverseDeps[depPath] = list of paths that depend on it
+	reverseDeps := make(map[string][]string)
+	for _, p := range projects {
+		if deps, ok := moduleDeps[p.Path]; ok {
+			for _, dep := range deps {
+				reverseDeps[dep] = append(reverseDeps[dep], p.Path)
+			}
+		}
+	}
+
+	// Log dependency information
+	for _, p := range projects {
+		if deps, ok := moduleDeps[p.Path]; ok {
+			fmt.Printf("[SDLC] %s depends on: %s\n", p.Path, strings.Join(deps, ", "))
+		}
+	}
+
+	// --- Debounce state ---
+	// pendingRestart tracks modules that have changes detected but not yet acted on.
+	// The value is the time of the first detected change; restart is scheduled after debounceInterval.
+	pendingRestart := make(map[string]time.Time)
+
+	// Helper to resolve a module path to the full Project, checking selected projects.
+	resolveProject := func(path string) (engine.Project, bool) {
+		for _, p := range projects {
+			if p.Path == path {
+				return p, true
+			}
+		}
+		return engine.Project{}, false
+	}
+
+	// Helper to restart a single module and log the reason.
+	restartModule := func(p engine.Project, reason string) {
+		fmt.Printf("[SDLC] Restarting %s: %s\n", p.Path, reason)
 		mu.Lock()
 		defer mu.Unlock()
 
 		state, exists := states[p.Path]
 		if exists {
-			// Stop existing
 			state.cancel()
 			state.wg.Wait()
-			// Add a small delay to ensure file handles are released
 			time.Sleep(500 * time.Millisecond)
 		}
 
-		// New context
 		runCtx, cancel := context.WithCancel(ctx)
 		wg := &sync.WaitGroup{}
 		wg.Add(1)
@@ -305,7 +355,6 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 		}
 		states[p.Path] = newState
 
-		// Find original index for coloring
 		idx := 0
 		for i, original := range allProjects {
 			if original.Path == p.Path {
@@ -317,7 +366,6 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 		go func() {
 			defer wg.Done()
 			env, args := prepareProjectEnv(p, rootEnvConfig)
-			// Pass a derived context that handles cancellation properly
 			err := runProject(runCtx, p, idx, action, env, args, len(projects) > 1)
 			if err != nil && err != context.Canceled {
 				fmt.Printf("[SDLC] Module %s exited with error: %v\n", p.Name, err)
@@ -325,9 +373,95 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 		}()
 	}
 
-	// Initial start
+	// Helper to restart a module and all modules that depend on it (cascade).
+	restartWithCascade := func(p engine.Project, reason string) {
+		// Collect the module itself plus all reverse dependencies
+		restartSet := make(map[string]bool)
+		restartSet[p.Path] = true
+
+		// BFS to find all transitive dependents
+		queue := []string{p.Path}
+		for len(queue) > 0 {
+			current := queue[0]
+			queue = queue[1:]
+			for _, dependent := range reverseDeps[current] {
+				if !restartSet[dependent] {
+					restartSet[dependent] = true
+					queue = append(queue, dependent)
+				}
+			}
+		}
+
+		// Restart the source module
+		restartModule(p, reason)
+
+		// Restart all dependents
+		for depPath := range restartSet {
+			if depPath == p.Path {
+				continue
+			}
+			if depProject, ok := resolveProject(depPath); ok {
+				restartModule(depProject, fmt.Sprintf("dependency %s changed", p.Path))
+			}
+		}
+	}
+
+	// statesRootLastMod returns the minimum lastMod time across all module states,
+	// used for checking if the root directory has changes not already covered by
+	// per-module checks.
+	statesRootLastMod := func() time.Time {
+		earliest := time.Now()
+		for _, s := range states {
+			if s.lastMod.Before(earliest) {
+				earliest = s.lastMod
+			}
+		}
+		return earliest
+	}
+
+	// isChildOfAnyModule returns true if the given file path is inside any of the
+	// selected project directories. This prevents root-level checks from triggering
+	// restarts for changes that are already handled by per-module checks.
+	isChildOfAnyModule := func(filePath string) bool {
+		for _, p := range projects {
+			if strings.HasPrefix(filePath, p.AbsPath+string(filepath.Separator)) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Initial start of all selected projects
 	for _, p := range projects {
-		startProject(p)
+		mu.Lock()
+		runCtx, cancel := context.WithCancel(ctx)
+		wg := &sync.WaitGroup{}
+		wg.Add(1)
+
+		newState := &projectState{
+			cancel:  cancel,
+			wg:      wg,
+			lastMod: time.Now(),
+		}
+		states[p.Path] = newState
+		mu.Unlock()
+
+		idx := 0
+		for i, original := range allProjects {
+			if original.Path == p.Path {
+				idx = i
+				break
+			}
+		}
+
+		go func(proj engine.Project, index int) {
+			defer wg.Done()
+			env, args := prepareProjectEnv(proj, rootEnvConfig)
+			err := runProject(runCtx, proj, index, action, env, args, len(projects) > 1)
+			if err != nil && err != context.Canceled {
+				fmt.Printf("[SDLC] Module %s exited with error: %v\n", proj.Name, err)
+			}
+		}(p, idx)
 	}
 
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -343,7 +477,6 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 			}
 			mu.Unlock()
 
-			// Wait for all goroutines to finish with a timeout
 			done := make(chan struct{})
 			go func() {
 				mu.Lock()
@@ -363,7 +496,26 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 			return nil
 
 		case <-ticker.C:
-			// Check for changes
+			now := time.Now()
+
+			// --- Check root directory for changes (propagate to all modules) ---
+			changed, changedFile, err := hasChanges(workDir, statesRootLastMod())
+			if err != nil {
+				fmt.Printf("[SDLC] Watch error in root directory: %v\n", err)
+			} else if changed && changedFile != "" && !isChildOfAnyModule(changedFile) {
+				// Root change not belonging to any specific module — restart all
+				fmt.Printf("\n[SDLC] File change detected in root: %s. Restarting all modules...\n", filepath.Base(changedFile))
+				for _, p := range projects {
+					restartModule(p, fmt.Sprintf("root file %s changed", filepath.Base(changedFile)))
+				}
+				// Clear all pending restarts since we just restarted everything
+				for k := range pendingRestart {
+					delete(pendingRestart, k)
+				}
+				continue
+			}
+
+			// --- Check each module for changes ---
 			for _, p := range projects {
 				mu.Lock()
 				s, ok := states[p.Path]
@@ -380,8 +532,40 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 				}
 
 				if changed {
-					fmt.Printf("\n[SDLC] File change detected: %s in %s. Restarting module...\n", filepath.Base(changedFile), p.Path)
-					startProject(p)
+					// Record pending restart with debounce
+					if _, alreadyPending := pendingRestart[p.Path]; !alreadyPending {
+						pendingRestart[p.Path] = now
+						if changedFile != "" {
+							fmt.Printf("\n[SDLC] File change detected: %s in %s (debouncing)...\n", filepath.Base(changedFile), p.Path)
+						} else {
+							fmt.Printf("\n[SDLC] File change detected in %s (debouncing)...\n", p.Path)
+						}
+					}
+
+					// Update the lastMod time immediately so we don't re-detect
+					// the same file on the next tick
+					mu.Lock()
+					if state, exists := states[p.Path]; exists {
+						state.lastMod = time.Now()
+					}
+					mu.Unlock()
+				}
+			}
+
+			// --- Process debounced restarts ---
+			var modulesToRestart []string
+			for modPath, firstChange := range pendingRestart {
+				if now.Sub(firstChange) >= debounceInterval {
+					modulesToRestart = append(modulesToRestart, modPath)
+				}
+			}
+
+			// Restart modules that have passed the debounce window
+			for _, modPath := range modulesToRestart {
+				delete(pendingRestart, modPath)
+
+				if p, ok := resolveProject(modPath); ok {
+					restartWithCascade(p, "file change detected")
 				}
 			}
 		}
@@ -477,7 +661,9 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 	return nil
 }
 
-// hasChanges checks if any file in root has been modified since sinceTime
+// hasChanges checks if any file in root has been modified since sinceTime.
+// It watches SDLC config files (.sdlc.conf, .sdlc.json) in addition to
+// regular source files, while still skipping hidden directories and build artifacts.
 func hasChanges(root string, sinceTime time.Time) (bool, string, error) {
 	var changed bool
 	var changedFile string
@@ -486,8 +672,9 @@ func hasChanges(root string, sinceTime time.Time) (bool, string, error) {
 			return err
 		}
 		if info.IsDir() {
-			// Skip .git, .idea, etc.
+			// Skip known hidden/special directories
 			if strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
+				// Skip all dot-directories (including .git, .idea, .planner, etc.)
 				return filepath.SkipDir
 			}
 			// Skip common build/dependency directories
@@ -496,7 +683,18 @@ func hasChanges(root string, sinceTime time.Time) (bool, string, error) {
 			}
 			return nil
 		}
-		// Skip hidden files
+
+		// Allow SDLC config files through (they are dot-prefixed files, not directories)
+		if info.Name() == ".sdlc.conf" || info.Name() == ".sdlc.json" {
+			if info.ModTime().After(sinceTime) {
+				changed = true
+				changedFile = path
+				return io.EOF // Stop walking
+			}
+			return nil
+		}
+
+		// Skip other hidden files
 		if strings.HasPrefix(info.Name(), ".") {
 			return nil
 		}
@@ -599,29 +797,13 @@ func filterProjects(projects []engine.Project) ([]engine.Project, error) {
 		return projects, nil
 	}
 
-	// Otherwise return empty list (caller will handle ambiguous case)
-	// Actually, returning all projects here and letting the caller decide
-	// based on count is better for the error message "multiple projects found"
+	// Otherwise return all projects (caller will handle multi-module case)
 	return projects, nil
 }
 
 func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) {
-	// If interactive mode is not possible (e.g. non-terminal), default to all
-	// For now, we assume terminal is available if we are here.
-
-	// Use promptui's Select to implement a multi-select simulation since MultiSelect is not stable in all promptui versions
-	// Or we can use a loop to let user toggle.
-	// But simpler is to list all modules and let user select one or "All".
-	// The user asked to "select multiple projects".
-	// A common pattern with promptui for multiselect is to use a loop or custom template,
-	// but here we can try a simple checklist approach if we want to be fancy,
-	// or just use a loop where user picks modules until they say "Done".
-
-	// Let's implement a loop where user can toggle selection.
-
 	selected := make(map[int]bool)
-	// Default to none selected initially? Or all?
-	// Let's default to all selected initially.
+	// Default to all selected initially
 	for i := range projects {
 		selected[i] = true
 	}
@@ -636,19 +818,10 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 			items = append(items, fmt.Sprintf("%s %s (%s)", prefix, p.Name, p.Path))
 		}
 
-		// Use a custom templates to avoid excessive newlines if needed,
-		// but primarily we want to clear the screen or just rely on promptui's behavior.
-		// However, promptui by default redraws in place if stdout is terminal.
-		// The issue "log every click" might refer to the fact that promptui prints the final selection 
-		// to stdout when you press enter.
-		// To suppress that, we can set HideSelected: true in templates?
-		// But Select struct doesn't have HideSelected. It has HideSelected bool.
-		// Let's try HideSelected: true.
-
 		prompt := promptui.Select{
-			Label: "Select modules to run (Select to toggle)",
-			Items: items,
-			Size:  len(items) + 1,
+			Label:        "Select modules to run (Select to toggle)",
+			Items:        items,
+			Size:         len(items) + 1,
 			HideSelected: true,
 		}
 
@@ -671,38 +844,6 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 		if selected[i] {
 			result = append(result, p)
 		} else {
-			// Add to ignore list for display purposes later if we want to show ignored status
-			// But the current logic in filterProjects handles ignores.
-			// Here we are returning the *selected* projects.
-			// If we want the UI to show "Ignored", we might need to populate ignoreMods global?
-			// Or just return the subset. The caller expects the subset of projects to run.
-			// However, if we want the "Ignored" UI to show up in the list later, we need to
-			// ensure the unselected ones are treated as "ignored".
-			// The current executeTask logic prints "Multi-module project detected" based on the *initial* detection,
-			// but then iterates over *projects* (which is the full list) to show status.
-			// Wait, executeTask calls filterProjects -> selectedProjects.
-			// Then promptModuleSelection filters *selectedProjects* further.
-			// Then executeTask iterates over *selectedProjects* to run.
-
-			// The "Multi-module project detected" block at the top of executeTask prints ALL projects
-			// and checks ignoreMods global to show [IGNORED].
-			// If we filter here, we are effectively removing them from the execution list.
-			// If we want the [IGNORED] UI to appear, we should probably update the ignoreMods list
-			// or change how executeTask works.
-
-			// Let's update the global ignoreMods list based on unselected items so the UI reflects it?
-			// But promptModuleSelection is called AFTER the initial list printing in executeTask?
-			// Actually, let's check where promptModuleSelection is called.
-			// It is called lines 192-198.
-			// The initial printing happens BEFORE that (lines 142-155).
-			// So the initial list is already printed.
-			// If we want to show the ignored status, we might need to print the list AGAIN or
-			// rely on the user knowing what they selected.
-
-			// The user requirement: "we need to be able to select multiple projects to run in the interactive section and the others ignored"
-			// Implicitly, this means the execution should respect the selection.
-
-			// Let's return the selected subset.
 			ignoreMods = append(ignoreMods, p.Path)
 		}
 	}
@@ -717,10 +858,10 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 func printBanner() {
 	banner := `
    _____ ____  __    ______
-  / ___// __ \/ /   / ____/
+  / ___// __ \\/ /   / ____/
   \__ \/ / / / /   / /     
  ___/ / /_/ / /___/ /___   
-/____/_____/_____/\____/   
+/____/_____/_____/\\____/   
 `
 	fmt.Println(colorCyan + banner + colorReset)
 }

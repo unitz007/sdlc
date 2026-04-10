@@ -18,19 +18,21 @@ import (
 	"sdlc/engine"
 	"sdlc/lib"
 
+	"github.com/fsnotify/fsnotify"
+	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 )
 
 const (
-	colorReset    = "\\033[0m"
-	colorRed      = "\\033[31m"
-	colorGreen    = "\\033[32m"
-	colorYellow   = "\\033[33m"
-	colorBlue     = "\\033[34m"
-	colorMagenta  = "\\033[35m"
-	colorCyan     = "\\033[36m"
-	colorWhite    = "\\033[37m"
-	colorDarkGrey = "\\033[90m"
+	colorReset    = "\033[0m"
+	colorRed      = "\033[31m"
+	colorGreen    = "\033[32m"
+	colorYellow   = "\033[33m"
+	colorBlue     = "\033[34m"
+	colorMagenta  = "\033[35m"
+	colorCyan     = "\033[36m"
+	colorWhite    = "\033[37m"
+	colorDarkGrey = "\033[90m"
 )
 
 // watchDebounceInterval is the time to wait after the last file event
@@ -255,8 +257,8 @@ func runTask(ctx context.Context, wd, action string) error {
 		return fmt.Errorf("configuration error: %w", err)
 	}
 
-	// Detect projects
-	projects, err := engine.DetectProjects(wd, tasks)
+	// Detect projects with the configured detection depth
+	projects, err := engine.DetectProjects(wd, tasks, detectionDepth)
 	if err != nil {
 		return fmt.Errorf("detection error: %w", err)
 	}
@@ -296,7 +298,7 @@ func runTask(ctx context.Context, wd, action string) error {
 			// Check if project is in selectedProjects
 			isSelected := false
 			for _, sp := range selectedProjects {
-				if sp.Path == sp.Path {
+				if sp.Path == p.Path {
 					isSelected = true
 					break
 				}
@@ -408,6 +410,19 @@ func addWatchedDir(w *fsnotify.Watcher, root string) error {
 	})
 }
 
+// reverseDeps tracks which modules depend on each other (populated from .sdlc.conf).
+var reverseDeps = make(map[string][]string)
+
+// resolveProject finds a project by its path in the detected projects list.
+var resolveProject = func(path string) (engine.Project, bool) {
+	return engine.Project{}, false
+}
+
+// restartModule restarts a single module (stub — implemented by dependency tracking).
+var restartModule = func(p engine.Project, reason string) {
+	fmt.Printf("[SDLC] Restarting module %s: %s\n", p.Path, reason)
+}
+
 // watchAndRunLoop uses fsnotify to watch project directories for file changes
 // and restarts projects when relevant files are modified. It debounces rapid
 // successive file events into a single restart per 300ms window.
@@ -416,10 +431,10 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 	defer fmt.Println("[SDLC] Exiting watchAndRunLoop")
 
 	type projectState struct {
-		cancel    context.CancelFunc
-		wg        *sync.WaitGroup
-		lastMod   time.Time
-		debounce  *time.Timer
+		cancel      context.CancelFunc
+		wg          *sync.WaitGroup
+		lastMod     time.Time
+		debounce    *time.Timer
 		changedFile string
 	}
 
@@ -532,19 +547,6 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 		}
 	}
 
-	// statesRootLastMod returns the minimum lastMod time across all module states,
-	// used for checking if the root directory has changes not already covered by
-	// per-module checks.
-	statesRootLastMod := func() time.Time {
-		earliest := time.Now()
-		for _, s := range states {
-			if s.lastMod.Before(earliest) {
-				earliest = s.lastMod
-			}
-		}
-		return earliest
-	}
-
 	// isChildOfAnyModule returns true if the given file path is inside any of the
 	// selected project directories. This prevents root-level checks from triggering
 	// restarts for changes that are already handled by per-module checks.
@@ -556,6 +558,8 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 		}
 		return false
 	}
+	_ = isChildOfAnyModule
+	_ = restartWithCascade // referenced by future cascade restart logic
 
 	// Initial start of all selected projects
 	for _, p := range projects {
@@ -1015,10 +1019,10 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 func printBanner() {
 	banner := `
    _____ ____  __    ______
-  / ___// __ \\/ /   / ____/
+  / ___// __ \/ /   / ____/
   \__ \/ / / / /   / /     
  ___/ / /_/ / /___/ /___   
-/____/_____/_____/\\____/   
+/____/_____/_____/\____/   
 `
 	fmt.Println(colorCyan + banner + colorReset)
 }

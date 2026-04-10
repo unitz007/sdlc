@@ -2,10 +2,12 @@ package engine
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sdlc/config"
 	"sdlc/lib"
+	"strings"
 )
 
 // Project represents a detected project with its location and task definition
@@ -16,12 +18,29 @@ type Project struct {
 	Task    lib.Task // The task definition
 }
 
-// DetectProjects scans the working directory and its immediate subdirectories
-// for known build files defined in the config.
-// It returns a list of detected projects.
-func DetectProjects(workDir string, tasks map[string]lib.Task) ([]Project, error) {
+// maxDetectionDepth is the upper bound for depth to prevent runaway recursion
+// when the user passes -1 (unlimited).
+const maxDetectionDepth = 50
+
+// DetectProjects scans the working directory for known build files defined
+// in the config. It recurses up to maxDepth levels deep (0 = root only,
+// 1 = root + immediate children, which is the previous default behaviour).
+// A negative maxDepth means unlimited recursion up to maxDetectionDepth.
+func DetectProjects(workDir string, tasks map[string]lib.Task, maxDepth int) ([]Project, error) {
 	var projects []Project
 	seenDirs := make(map[string]bool)
+
+	absWorkDir, err := filepath.Abs(workDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve absolute path for %q: %w", workDir, err)
+	}
+
+	// Clamp negative depth to the safety limit
+	if maxDepth < 0 {
+		maxDepth = maxDetectionDepth
+	}
+
+	skipDirs := defaultSkipDirs()
 
 	// Helper to check a directory for build files
 	checkDir := func(dir string) error {
@@ -101,23 +120,50 @@ func DetectProjects(workDir string, tasks map[string]lib.Task) ([]Project, error
 		return nil
 	}
 
-	// Check root directory
-	if err := checkDir(workDir); err != nil {
-		return nil, fmt.Errorf("failed to read directory %s: %w", workDir, err)
-	}
-
-	// Check immediate subdirectories
-	entries, err := os.ReadDir(workDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read directory %s: %w", workDir, err)
-	}
-
-	for _, entry := range entries {
-		if entry.IsDir() && entry.Name() != ".git" && entry.Name() != ".idea" && entry.Name() != ".planner" && entry.Name() != "node_modules" {
-			subDir := filepath.Join(workDir, entry.Name())
-			// Ignore errors in subdirectories to keep going
-			_ = checkDir(subDir)
+	// Walk the directory tree with depth limiting
+	err = filepath.WalkDir(absWorkDir, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			// Skip directories we can't access but continue walking
+			return nil
 		}
+
+		if !d.IsDir() {
+			return nil
+		}
+
+		// Calculate depth relative to the working directory
+		rel, err := filepath.Rel(absWorkDir, path)
+		if err != nil {
+			return nil
+		}
+		if rel == "." {
+			// This is the root — always check it
+			if err := checkDir(path); err != nil {
+				fmt.Printf("Warning: failed to check directory %s: %v\n", path, err)
+			}
+			return nil
+		}
+
+		// Check depth constraint
+		depth := strings.Count(rel, string(filepath.Separator))
+		if depth > maxDepth {
+			return fs.SkipDir
+		}
+
+		// Skip well-known non-project directories
+		if skipDirs[d.Name()] {
+			return fs.SkipDir
+		}
+
+		// Check this directory for build files
+		if err := checkDir(path); err != nil {
+			fmt.Printf("Warning: failed to check directory %s: %v\n", path, err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk directory %s: %w", workDir, err)
 	}
 
 	return projects, nil

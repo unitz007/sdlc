@@ -9,14 +9,15 @@ import (
 )
 
 var (
-	cfgFile    string
-	workDir    string
-	extraArgs  string
-	targetMod  string
-	ignoreMods []string
-	runAllMods bool
-	watchMode  bool
-	dryRun     bool
+	cfgFile         string
+	workDir         string
+	extraArgs       string
+	targetMod       string
+	ignoreMods      []string
+	runAllMods      bool
+	watchMode       bool
+	dryRun          bool
+	detectionDepth  int
 )
 
 // RootCmd represents the base command when called without any subcommands
@@ -61,6 +62,7 @@ func init() {
 	RootCmd.PersistentFlags().BoolVarP(&runAllMods, "all", "a", false, "Run command for all detected modules")
 	RootCmd.PersistentFlags().BoolVarP(&watchMode, "watch", "w", false, "Watch for file changes and restart")
 	RootCmd.PersistentFlags().BoolVarP(&dryRun, "dry-run", "n", false, "Show what would happen without executing commands (dry run)")
+	RootCmd.PersistentFlags().IntVarP(&detectionDepth, "depth", "D", 1, "Max recursion depth for project detection (0=root only, 1=root+children, -1=unlimited)")
 }
 
 // resolveWorkDir handles the directory resolution logic including tilde expansion

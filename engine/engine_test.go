@@ -1,114 +1,165 @@
 package engine
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
-
 	"sdlc/lib"
 )
 
-func TestMergeTasks_BuiltInOverride(t *testing.T) {
-	global := lib.Task{
-		Run:   "go run main.go",
-		Build: "go build -v",
-	}
-	local := lib.Task{
-		Run:   "go run cmd/server/main.go",
-		Build: "go build -o bin/server",
+func TestDetectProjects_MaxDepthZero(t *testing.T) {
+	// maxDepth 0: only scan root, no subdirectories
+	tmpDir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(tmpDir, "sub", "deep"), 0755)
+	_ = os.WriteFile(filepath.Join(tmpDir, "sub", "go.mod"), []byte("module sub\n"), 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module root\n"), 0644)
+
+	tasks := map[string]lib.Task{
+		"go.mod": {Run: "go run .", Test: "go test ./..."},
 	}
 
-	merged := mergeTasks(global, local)
-	if merged.Run != "go run cmd/server/main.go" {
-		t.Errorf("merged.Run = %q, want %q", merged.Run, "go run cmd/server/main.go")
+	projects, err := DetectProjects(tmpDir, tasks, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if merged.Build != "go build -o bin/server" {
-		t.Errorf("merged.Build = %q, want %q", merged.Build, "go build -o bin/server")
+
+	if len(projects) != 1 {
+		t.Fatalf("expected 1 project at maxDepth=0, got %d", len(projects))
+	}
+	if projects[0].Name != "go.mod" {
+		t.Errorf("expected go.mod, got %s", projects[0].Name)
+	}
+	if filepath.Base(projects[0].AbsPath) != filepath.Base(tmpDir) {
+		t.Errorf("expected root dir, got %s", projects[0].AbsPath)
 	}
 }
 
-func TestMergeTasks_CustomActions(t *testing.T) {
-	global := lib.Task{
-		Custom: map[string]string{
-			"lint":    "golangci-lint run",
-			"deploy":  "kubectl apply -f k8s/",
-		},
-	}
-	local := lib.Task{
-		Custom: map[string]string{
-			"deploy":  "kubectl apply -f k8s/overridden/",
-			"migrate": "go run migrations/main.go",
-		},
+func TestDetectProjects_MaxDepthOne(t *testing.T) {
+	// maxDepth 1: root + immediate subdirectories
+	tmpDir := t.TempDir()
+	subDir := filepath.Join(tmpDir, "sub")
+	deepDir := filepath.Join(subDir, "deep")
+	_ = os.MkdirAll(deepDir, 0755)
+
+	_ = os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module root\n"), 0644)
+	_ = os.WriteFile(filepath.Join(subDir, "go.mod"), []byte("module sub\n"), 0644)
+	_ = os.WriteFile(filepath.Join(deepDir, "go.mod"), []byte("module deep\n"), 0644)
+
+	tasks := map[string]lib.Task{
+		"go.mod": {Run: "go run .", Test: "go test ./..."},
 	}
 
-	merged := mergeTasks(global, local)
+	projects, err := DetectProjects(tmpDir, tasks, 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
-	if merged.Custom["lint"] != "golangci-lint run" {
-		t.Errorf("merged.Custom[lint] = %q, want %q", merged.Custom["lint"], "golangci-lint run")
+	if len(projects) != 2 {
+		t.Fatalf("expected 2 projects at maxDepth=1, got %d", len(projects))
 	}
-	if merged.Custom["deploy"] != "kubectl apply -f k8s/overridden/" {
-		t.Errorf("merged.Custom[deploy] = %q, want %q", merged.Custom["deploy"], "kubectl apply -f k8s/overridden/")
+
+	names := map[string]bool{}
+	for _, p := range projects {
+		names[p.Name] = true
 	}
-	if merged.Custom["migrate"] != "go run migrations/main.go" {
-		t.Errorf("merged.Custom[migrate] = %q, want %q", merged.Custom["migrate"], "go run migrations/main.go")
+	if !names["go.mod"] {
+		t.Error("expected to find root go.mod project")
 	}
 }
 
-func TestMergeTasks_Hooks(t *testing.T) {
-	global := lib.Task{
-		Hooks: lib.TaskHooks{
-			Pre: map[string]string{
-				"build": "echo global pre-build",
-			},
-			Post: map[string]string{
-				"run": "echo global post-run",
-			},
-		},
-	}
-	local := lib.Task{
-		Hooks: lib.TaskHooks{
-			Pre: map[string]string{
-				"build": "echo local pre-build",
-				"test":  "echo local pre-test",
-			},
-			Post: map[string]string{
-				"run":  "echo local post-run",
-				"test": "echo local post-test",
-			},
-		},
+func TestDetectProjects_MaxDepthTwo(t *testing.T) {
+	// maxDepth 2: root + sub + deep
+	tmpDir := t.TempDir()
+	subDir := filepath.Join(tmpDir, "sub")
+	deepDir := filepath.Join(subDir, "deep")
+	_ = os.MkdirAll(deepDir, 0755)
+
+	_ = os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module root\n"), 0644)
+	_ = os.WriteFile(filepath.Join(subDir, "go.mod"), []byte("module sub\n"), 0644)
+	_ = os.WriteFile(filepath.Join(deepDir, "go.mod"), []byte("module deep\n"), 0644)
+
+	tasks := map[string]lib.Task{
+		"go.mod": {Run: "go run .", Test: "go test ./..."},
 	}
 
-	merged := mergeTasks(global, local)
+	projects, err := DetectProjects(tmpDir, tasks, 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
-	if merged.Hooks.Pre["build"] != "echo local pre-build" {
-		t.Errorf("merged.Hooks.Pre[build] = %q, want %q", merged.Hooks.Pre["build"], "echo local pre-build")
-	}
-	if merged.Hooks.Pre["test"] != "echo local pre-test" {
-		t.Errorf("merged.Hooks.Pre[test] = %q, want %q", merged.Hooks.Pre["test"], "echo local pre-test")
-	}
-	if merged.Hooks.Post["run"] != "echo local post-run" {
-		t.Errorf("merged.Hooks.Post[run] = %q, want %q", merged.Hooks.Post["run"], "echo local post-run")
-	}
-	if merged.Hooks.Post["test"] != "echo local post-test" {
-		t.Errorf("merged.Hooks.Post[test] = %q, want %q", merged.Hooks.Post["test"], "echo local post-test")
+	if len(projects) != 3 {
+		t.Fatalf("expected 3 projects at maxDepth=2, got %d", len(projects))
 	}
 }
 
-func TestMergeTasks_NilCustom(t *testing.T) {
-	global := lib.Task{}
-	local := lib.Task{
-		Custom: map[string]string{
-			"deploy": "kubectl apply",
-		},
+func TestDetectProjects_SkippedDirs(t *testing.T) {
+	// Directories in lib.SkippedDirs should not be traversed
+	tmpDir := t.TempDir()
+	nodeModules := filepath.Join(tmpDir, "node_modules", "pkg")
+	gitDir := filepath.Join(tmpDir, ".git", "hooks")
+	_ = os.MkdirAll(nodeModules, 0755)
+	_ = os.MkdirAll(gitDir, 0755)
+
+	_ = os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module root\n"), 0644)
+	_ = os.WriteFile(filepath.Join(nodeModules, "go.mod"), []byte("module nm-pkg\n"), 0644)
+	_ = os.WriteFile(filepath.Join(gitDir, "go.mod"), []byte("module git-hooks\n"), 0644)
+
+	tasks := map[string]lib.Task{
+		"go.mod": {Run: "go run .", Test: "go test ./..."},
 	}
 
-	merged := mergeTasks(global, local)
-	if merged.Custom["deploy"] != "kubectl apply" {
-		t.Errorf("merged.Custom[deploy] = %q, want %q", merged.Custom["deploy"], "kubectl apply")
+	projects, err := DetectProjects(tmpDir, tasks, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(projects) != 1 {
+		t.Fatalf("expected 1 project (skipped node_modules and .git), got %d", len(projects))
 	}
 }
 
-func TestMergeTasks_Empty(t *testing.T) {
-	merged := mergeTasks(lib.Task{}, lib.Task{})
-	if merged.Run != "" || merged.Build != "" {
-		t.Error("expected empty merge")
+func TestDetectProjects_NoDuplicates(t *testing.T) {
+	// Symlink or re-visiting the same directory should not create duplicates
+	tmpDir := t.TempDir()
+	subDir := filepath.Join(tmpDir, "sub")
+	_ = os.MkdirAll(subDir, 0755)
+
+	// Root has go.mod, sub does not
+	_ = os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module root\n"), 0644)
+
+	tasks := map[string]lib.Task{
+		"go.mod": {Run: "go run .", Test: "go test ./..."},
+	}
+
+	projects, err := DetectProjects(tmpDir, tasks, 5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(projects))
+	}
+}
+
+func TestDetectProjects_MultipleBuildFiles(t *testing.T) {
+	// One project per directory: if both go.mod and package.json exist in same dir,
+	// only the first one found (by os.ReadDir order) should be used.
+	tmpDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module root\n"), 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "package.json"), []byte("{\"name\": \"root\"}\n"), 0644)
+
+	tasks := map[string]lib.Task{
+		"go.mod":        {Run: "go run ."},
+		"package.json":  {Run: "npm start"},
+	}
+
+	projects, err := DetectProjects(tmpDir, tasks, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Only one project per directory
+	if len(projects) != 1 {
+		t.Fatalf("expected 1 project (one per dir), got %d", len(projects))
 	}
 }

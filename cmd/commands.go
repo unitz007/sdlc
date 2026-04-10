@@ -18,19 +18,21 @@ import (
 	"sdlc/engine"
 	"sdlc/lib"
 
+	"github.com/fsnotify/fsnotify"
+	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 )
 
 const (
-	colorReset    = "\\033[0m"
-	colorRed      = "\\033[31m"
-	colorGreen    = "\\033[32m"
-	colorYellow   = "\\033[33m"
-	colorBlue     = "\\033[34m"
-	colorMagenta  = "\\033[35m"
-	colorCyan     = "\\033[36m"
-	colorWhite    = "\\033[37m"
-	colorDarkGrey = "\\033[90m"
+	colorReset    = "\033[0m"
+	colorRed      = "\033[31m"
+	colorGreen    = "\033[32m"
+	colorYellow   = "\033[33m"
+	colorBlue     = "\033[34m"
+	colorMagenta  = "\033[35m"
+	colorCyan     = "\033[36m"
+	colorWhite    = "\033[37m"
+	colorDarkGrey = "\033[90m"
 )
 
 // watchDebounceInterval is the time to wait after the last file event
@@ -48,19 +50,6 @@ var moduleColors = []string{
 
 func getModuleColor(index int) string {
 	return moduleColors[index%len(moduleColors)]
-}
-
-// skippedDirs are directory names that should never be watched or trigger restarts.
-var skippedDirs = map[string]bool{
-	".git":         true,
-	".idea":        true,
-	".planner":     true,
-	"node_modules": true,
-	"dist":         true,
-	"build":        true,
-	"target":       true,
-	"bin":          true,
-	"pkg":          true,
 }
 
 // skippedExtensions are file extensions that should not trigger restarts.
@@ -83,7 +72,7 @@ func shouldSkipPath(path string, isDir bool) bool {
 	}
 
 	if isDir {
-		return skippedDirs[base]
+		return lib.SkippedDirs[base]
 	}
 
 	// Skip files with ignored extensions
@@ -255,8 +244,8 @@ func runTask(ctx context.Context, wd, action string) error {
 		return fmt.Errorf("configuration error: %w", err)
 	}
 
-	// Detect projects
-	projects, err := engine.DetectProjects(wd, tasks)
+	// Detect projects using the configured depth
+	projects, err := engine.DetectProjects(wd, tasks, depth)
 	if err != nil {
 		return fmt.Errorf("detection error: %w", err)
 	}
@@ -296,7 +285,7 @@ func runTask(ctx context.Context, wd, action string) error {
 			// Check if project is in selectedProjects
 			isSelected := false
 			for _, sp := range selectedProjects {
-				if sp.Path == sp.Path {
+				if p.Path == sp.Path {
 					isSelected = true
 					break
 				}
@@ -408,6 +397,9 @@ func addWatchedDir(w *fsnotify.Watcher, root string) error {
 	})
 }
 
+// reverseDeps holds the reverse dependency graph (dependency → list of dependents).
+var reverseDeps map[string][]string
+
 // watchAndRunLoop uses fsnotify to watch project directories for file changes
 // and restarts projects when relevant files are modified. It debounces rapid
 // successive file events into a single restart per 300ms window.
@@ -416,15 +408,27 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 	defer fmt.Println("[SDLC] Exiting watchAndRunLoop")
 
 	type projectState struct {
-		cancel    context.CancelFunc
-		wg        *sync.WaitGroup
-		lastMod   time.Time
-		debounce  *time.Timer
+		cancel      context.CancelFunc
+		wg          *sync.WaitGroup
+		lastMod     time.Time
+		debounce    *time.Timer
 		changedFile string
 	}
 
 	states := make(map[string]*projectState)
 	var mu sync.Mutex
+
+	// Build reverse dependency graph from .sdlc.conf Depends fields
+	reverseDeps = make(map[string][]string)
+	for _, p := range projects {
+		envCfg, err := config.LoadEnvConfig(p.AbsPath)
+		if err != nil || envCfg == nil {
+			continue
+		}
+		for _, dep := range envCfg.Depends {
+			reverseDeps[dep] = append(reverseDeps[dep], p.Path)
+		}
+	}
 
 	// Create a single fsnotify watcher for all projects
 	watcher, err := fsnotify.NewWatcher()
@@ -458,18 +462,48 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 		})
 	}
 
-	// Helper to start (or restart) a project
-	startProject := func(p engine.Project) {
-		mu.Lock()
-		defer mu.Unlock()
+	// Helper to find which project owns a given file path.
+	// It walks up the directory tree to find the longest matching watched directory.
+	findProject := func(filePath string) *engine.Project {
+		dir := filepath.Dir(filePath)
+		for {
+			if p, ok := dirToProject[dir]; ok {
+				return p
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+		return nil
+	}
 
+	// Helper to resolve a project by path from the allProjects list.
+	resolveProject := func(depPath string) (engine.Project, bool) {
+		for _, p := range allProjects {
+			if p.Path == depPath {
+				return p, true
+			}
+		}
+		return engine.Project{}, false
+	}
+
+	// Helper to restart a single module.
+	restartModule := func(p engine.Project, reason string) {
+		mu.Lock()
 		state, exists := states[p.Path]
 		if exists {
 			state.cancel()
 			state.wg.Wait()
-			time.Sleep(500 * time.Millisecond)
 		}
+		mu.Unlock()
 
+		// Wait briefly for file handles to release
+		time.Sleep(500 * time.Millisecond)
+
+		// Start the project
+		mu.Lock()
 		runCtx, cancel := context.WithCancel(ctx)
 		wg := &sync.WaitGroup{}
 		wg.Add(1)
@@ -480,6 +514,7 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 			lastMod: time.Now(),
 		}
 		states[p.Path] = newState
+		mu.Unlock()
 
 		idx := 0
 		for i, original := range allProjects {
@@ -489,6 +524,7 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 			}
 		}
 
+		fmt.Printf("[SDLC] Restarting module %s: %s\n", p.Path, reason)
 		go func() {
 			defer wg.Done()
 			env, args := prepareProjectEnv(p, rootEnvConfig)
@@ -497,6 +533,11 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 				fmt.Printf("[SDLC] Module %s exited with error: %v\n", p.Name, err)
 			}
 		}()
+	}
+
+	// Helper to start (or restart) a project (used in debounce)
+	startProject := func(p engine.Project) {
+		restartModule(p, "file change detected")
 	}
 
 	// Helper to restart a module and all modules that depend on it (cascade).
@@ -530,19 +571,6 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 				restartModule(depProject, fmt.Sprintf("dependency %s changed", p.Path))
 			}
 		}
-	}
-
-	// statesRootLastMod returns the minimum lastMod time across all module states,
-	// used for checking if the root directory has changes not already covered by
-	// per-module checks.
-	statesRootLastMod := func() time.Time {
-		earliest := time.Now()
-		for _, s := range states {
-			if s.lastMod.Before(earliest) {
-				earliest = s.lastMod
-			}
-		}
-		return earliest
 	}
 
 	// isChildOfAnyModule returns true if the given file path is inside any of the
@@ -590,23 +618,6 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 		}(p, idx)
 	}
 
-	// Helper to find which project owns a given file path.
-	// It walks up the directory tree to find the longest matching watched directory.
-	findProject := func(filePath string) *engine.Project {
-		dir := filepath.Dir(filePath)
-		for {
-			if p, ok := dirToProject[dir]; ok {
-				return p
-			}
-			parent := filepath.Dir(dir)
-			if parent == dir {
-				break
-			}
-			dir = parent
-		}
-		return nil
-	}
-
 	// Helper to handle a file event for a project with debouncing
 	handleEvent := func(filePath string, p *engine.Project) {
 		mu.Lock()
@@ -637,6 +648,10 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 		})
 		mu.Unlock()
 	}
+
+	// Suppress unused variable warnings
+	_ = restartWithCascade
+	_ = isChildOfAnyModule
 
 	for {
 		select {
@@ -781,6 +796,7 @@ func runHook(ctx context.Context, phase, action string, p engine.Project, env ma
 
 	colorIdx := 0
 	color := getModuleColor(colorIdx)
+
 	prefix := fmt.Sprintf("[%s%s] ", color, p.Path)
 
 	hookCmd = substituteEnv(hookCmd, env)
@@ -1015,10 +1031,10 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 func printBanner() {
 	banner := `
    _____ ____  __    ______
-  / ___// __ \\/ /   / ____/
+  / ___// __ \/ /   / ____/
   \__ \/ / / / /   / /     
  ___/ / /_/ / /___/ /___   
-/____/_____/_____/\\____/   
+/____/_____/_____/_____/   
 `
 	fmt.Println(colorCyan + banner + colorReset)
 }

@@ -16,10 +16,17 @@ type Project struct {
 	Task    lib.Task // The task definition
 }
 
-// DetectProjects scans the working directory and its immediate subdirectories
-// for known build files defined in the config.
+// DetectProjects scans the working directory and its subdirectories up to
+// maxDepth levels deep for known build files defined in the config.
 // It returns a list of detected projects.
-func DetectProjects(workDir string, tasks map[string]lib.Task) ([]Project, error) {
+//
+// Depth semantics:
+//   - maxDepth 0: scan only the root working directory.
+//   - maxDepth 1: root + immediate subdirectories (default, backward-compatible).
+//   - maxDepth N: root + up to N levels of subdirectories.
+//
+// Directories listed in lib.SkippedDirs are never traversed.
+func DetectProjects(workDir string, tasks map[string]lib.Task, maxDepth int) ([]Project, error) {
 	var projects []Project
 	seenDirs := make(map[string]bool)
 
@@ -76,7 +83,7 @@ func DetectProjects(workDir string, tasks map[string]lib.Task) ([]Project, error
 				// We enforce one project per directory to avoid running multiple tasks for the same project
 				exists := false
 				for _, p := range projects {
-					if p.AbsPath == dir {
+					if p.AbsPath == absDir {
 						exists = true
 						break
 					}
@@ -93,7 +100,7 @@ func DetectProjects(workDir string, tasks map[string]lib.Task) ([]Project, error
 				projects = append(projects, Project{
 					Name:    entry.Name(),
 					Path:    relPath,
-					AbsPath: dir,
+					AbsPath: absDir,
 					Task:    task,
 				})
 			}
@@ -101,22 +108,59 @@ func DetectProjects(workDir string, tasks map[string]lib.Task) ([]Project, error
 		return nil
 	}
 
+	// BFS queue entries: (directory path, current depth relative to workDir)
+	type queueEntry struct {
+		dir   string
+		depth int
+	}
+
 	// Check root directory
 	if err := checkDir(workDir); err != nil {
 		return nil, fmt.Errorf("failed to read directory %s: %w", workDir, err)
 	}
 
-	// Check immediate subdirectories
+	if maxDepth < 1 {
+		return projects, nil
+	}
+
+	// Seed the BFS queue with immediate subdirectories of workDir
 	entries, err := os.ReadDir(workDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read directory %s: %w", workDir, err)
 	}
 
+	queue := make([]queueEntry, 0)
 	for _, entry := range entries {
-		if entry.IsDir() && entry.Name() != ".git" && entry.Name() != ".idea" && entry.Name() != ".planner" && entry.Name() != "node_modules" {
-			subDir := filepath.Join(workDir, entry.Name())
-			// Ignore errors in subdirectories to keep going
-			_ = checkDir(subDir)
+		if entry.IsDir() && !lib.SkippedDirs[entry.Name()] {
+			queue = append(queue, queueEntry{
+				dir:   filepath.Join(workDir, entry.Name()),
+				depth: 1,
+			})
+		}
+	}
+
+	// BFS traversal
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+
+		// Check this directory for build files
+		_ = checkDir(cur.dir) // Ignore errors in subdirectories to keep going
+
+		// If we haven't reached maxDepth, enqueue child directories
+		if cur.depth < maxDepth {
+			subEntries, err := os.ReadDir(cur.dir)
+			if err != nil {
+				continue // Skip unreadable directories
+			}
+			for _, entry := range subEntries {
+				if entry.IsDir() && !lib.SkippedDirs[entry.Name()] {
+					queue = append(queue, queueEntry{
+						dir:   filepath.Join(cur.dir, entry.Name()),
+						depth: cur.depth + 1,
+					})
+				}
+			}
 		}
 	}
 

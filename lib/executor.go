@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strings"
 	"syscall"
 )
 
@@ -19,12 +18,14 @@ type Executor struct {
 }
 
 // NewExecutor creates a new Executor for the given command string. The command
-// is split on spaces — the first token is used as the program name and the
-// remaining tokens as arguments.
+// is executed through a shell (sh -c), enabling full shell syntax support
+// including pipes, redirects, subshells, semicolons, &&, ||, and quoted strings.
 func NewExecutor(ctx context.Context, command string) *Executor {
-	program := strings.Split(command, " ")[0]
-	// Use CommandContext for cancellation support
-	cmd := exec.CommandContext(ctx, program, strings.Split(command, " ")[1:]...)
+	// Use CommandContext for cancellation support.
+	// Delegating to sh -c allows pipes, redirects, subshells, and quoted
+	// arguments to be interpreted by the system shell rather than us
+	// manually splitting on spaces.
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 
 	// Create a new process group for proper signal handling
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

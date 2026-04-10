@@ -98,6 +98,33 @@ func LoadEnvConfig(dir string) (*EnvSettings, error) {
 	return config, nil
 }
 
+// rawTask is an intermediate representation used for JSON unmarshaling that
+// supports the extended schema with custom actions and hooks alongside the
+// built-in lifecycle fields. This ensures backward compatibility with existing
+// .sdlc.json files that only have the 5 built-in fields.
+type rawTask struct {
+	Run     string            `json:"run"`
+	Test    string            `json:"test"`
+	Build   string            `json:"build"`
+	Install string            `json:"install"`
+	Clean   string            `json:"clean"`
+	Custom  map[string]string `json:"custom,omitempty"`
+	Hooks   lib.TaskHooks     `json:"hooks,omitempty"`
+}
+
+// toTask converts a rawTask to a lib.Task.
+func (r *rawTask) toTask() lib.Task {
+	return lib.Task{
+		Run:     r.Run,
+		Test:    r.Test,
+		Build:   r.Build,
+		Install: r.Install,
+		Clean:   r.Clean,
+		Custom:  r.Custom,
+		Hooks:   r.Hooks,
+	}
+}
+
 // Load reads the .sdlc.json configuration file from the given directory path.
 // If conf is empty, it defaults to the user's home directory.
 // If the file does not exist, an empty file is created.
@@ -117,9 +144,14 @@ func Load(confDir string) (map[string]lib.Task, error) {
 		return make(map[string]lib.Task), nil
 	}
 
-	var tasks map[string]lib.Task
-	if err := json.Unmarshal(content, &tasks); err != nil {
+	var rawTasks map[string]rawTask
+	if err := json.Unmarshal(content, &rawTasks); err != nil {
 		return nil, fmt.Errorf("invalid configuration structure in %s: %w", configFile, err)
+	}
+
+	tasks := make(map[string]lib.Task, len(rawTasks))
+	for k, v := range rawTasks {
+		tasks[k] = v.toTask()
 	}
 
 	return tasks, nil
@@ -142,9 +174,14 @@ func LoadLocal(confDir string) (map[string]lib.Task, error) {
 		return make(map[string]lib.Task), nil
 	}
 
-	var tasks map[string]lib.Task
-	if err := json.Unmarshal(content, &tasks); err != nil {
+	var rawTasks map[string]rawTask
+	if err := json.Unmarshal(content, &rawTasks); err != nil {
 		return nil, fmt.Errorf("invalid configuration structure in %s: %w", configPath, err)
+	}
+
+	tasks := make(map[string]lib.Task, len(rawTasks))
+	for k, v := range rawTasks {
+		tasks[k] = v.toTask()
 	}
 
 	return tasks, nil

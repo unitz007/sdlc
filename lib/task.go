@@ -4,53 +4,32 @@ package lib
 
 import "errors"
 
-// TaskHooks defines pre/post lifecycle hooks for a project task.
-// Each map key is the action name (e.g., "build", "run") and the value is
-// the shell command to execute.
+// TaskHooks defines pre and post hooks for lifecycle actions.
+// Keys in Pre and Post maps are action names (e.g., "build", "run", "deploy"),
+// and values are shell commands to execute.
 type TaskHooks struct {
-	// Pre maps action names to commands that run before the main action.
-	// Example: {"build": "echo starting build..."}
-	Pre map[string]string `json:"pre,omitempty"`
-
-	// Post maps action names to commands that run after the main action,
-	// regardless of success or failure.
-	// Example: {"run": "notify-send done"}
-	Post map[string]string `json:"post,omitempty"`
-}
-
-// Hook returns the pre-hook command for the given action, or empty string
-// if no pre-hook is defined.
-func (h TaskHooks) Hook(phase, action string) string {
-	switch phase {
-	case "pre":
-		if h.Pre != nil {
-			return h.Pre[action]
-		}
-	case "post":
-		if h.Post != nil {
-			return h.Post[action]
-		}
-	}
-	return ""
+	Pre  map[string]string `json:"pre"`
+	Post map[string]string `json:"post"`
 }
 
 // Task represents the set of lifecycle commands associated with a specific
 // project type. Each field maps to a shell command that performs the
 // corresponding action (run, test, or build).
 type Task struct {
-	Run     string     `json:"run"`
-	Test    string     `json:"test"`
-	Build   string     `json:"build"`
-	Install string     `json:"install"`
-	Clean   string     `json:"clean"`
+	Run     string            `json:"run"`
+	Test    string            `json:"test"`
+	Build   string            `json:"build"`
+	Install string            `json:"install"`
+	Clean   string            `json:"clean"`
 	Custom  map[string]string `json:"custom,omitempty"`
-	Hooks   TaskHooks  `json:"hooks,omitempty"`
+	Hooks   TaskHooks         `json:"hooks,omitempty"`
 }
 
 // Command returns the shell command string for the given lifecycle action.
 // Valid values for field are "run", "test", "build", "install", and "clean".
-// For any other field, it checks the Custom map. An error is returned
-// if field does not match any known action and is not found in Custom.
+// If field is not one of the built-in actions, it checks the Custom map.
+// An error is returned if field does not match any known action and no custom
+// action is defined for it.
 func (c Task) Command(field string) (string, error) {
 	switch field {
 	case "run":
@@ -73,21 +52,35 @@ func (c Task) Command(field string) (string, error) {
 	}
 }
 
-// CustomActions returns a list of all custom action names defined in the task.
-func (c Task) CustomActions() []string {
-	var actions []string
-	for k := range c.Custom {
-		actions = append(actions, k)
-	}
-	return actions
+// HasCustomActions returns true if the task has any custom actions defined.
+func (c Task) HasCustomActions() bool {
+	return len(c.Custom) > 0
 }
 
-// AllActions returns all available action names: the 5 built-in actions plus
-// any custom actions.
-func (c Task) AllActions() []string {
-	actions := []string{"run", "test", "build", "install", "clean"}
-	for k := range c.Custom {
-		actions = append(actions, k)
+// CustomActionNames returns a sorted list of custom action names defined for this task.
+func (c Task) CustomActionNames() []string {
+	if c.Custom == nil {
+		return nil
 	}
-	return actions
+	names := make([]string, 0, len(c.Custom))
+	for name := range c.Custom {
+		names = append(names, name)
+	}
+	return names
+}
+
+// PreHook returns the pre-hook command for the given action, or empty string if none.
+func (c Task) PreHook(action string) string {
+	if c.Hooks.Pre != nil {
+		return c.Hooks.Pre[action]
+	}
+	return ""
+}
+
+// PostHook returns the post-hook command for the given action, or empty string if none.
+func (c Task) PostHook(action string) string {
+	if c.Hooks.Post != nil {
+		return c.Hooks.Post[action]
+	}
+	return ""
 }

@@ -9,15 +9,16 @@ import (
 )
 
 var (
-	cfgFile         string
-	workDir         string
-	extraArgs       string
-	targetMod       string
-	ignoreMods      []string
-	runAllMods      bool
-	watchMode       bool
-	dryRun          bool
-	detectionDepth  int
+	cfgFile    string
+	workDir    string
+	extraArgs  string
+	targetMod  string
+	ignoreMods []string
+
+	runAllMods bool
+	watchMode  bool
+
+	dryRun     bool
 )
 
 // RootCmd represents the base command when called without any subcommands
@@ -63,6 +64,20 @@ func init() {
 	RootCmd.PersistentFlags().BoolVarP(&watchMode, "watch", "w", false, "Watch for file changes and restart")
 	RootCmd.PersistentFlags().BoolVarP(&dryRun, "dry-run", "n", false, "Show what would happen without executing commands (dry run)")
 	RootCmd.PersistentFlags().IntVarP(&detectionDepth, "depth", "D", 1, "Max recursion depth for project detection (0=root only, 1=root+children, -1=unlimited)")
+}
+
+// SetupDynamicCommands registers dynamic sub-commands from custom actions and
+// discovered plugins. This must be called after flag parsing so that --dir
+// and --config flags are available.
+func SetupDynamicCommands() {
+	// Register custom actions as dynamic sub-commands (AC3)
+	RegisterDynamicCommands()
+
+	// Register discovered plugins as sub-commands (AC4)
+	wd, err := resolveWorkDir(workDir)
+	if err == nil {
+		RegisterPluginCommands(wd)
+	}
 }
 
 // resolveWorkDir handles the directory resolution logic including tilde expansion

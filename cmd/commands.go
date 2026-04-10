@@ -105,32 +105,23 @@ var cleanCmd = &cobra.Command{
 	},
 }
 
-// dynamicCommands tracks which custom actions have been registered as
-// Cobra sub-commands to avoid double-registration.
-var dynamicCommands map[string]bool
-
-// registerDynamicCommands loads the project config and registers any custom
-// actions as Cobra sub-commands on the root command.
-func registerDynamicCommands(workDir string) {
-	if dynamicCommands != nil {
-		return // Already registered
-	}
-	dynamicCommands = make(map[string]bool)
-
-	// Load configuration to discover custom actions
-	tasks, err := loadTasks(workDir)
-	if err != nil {
-		return // Don't fail — dynamic commands are optional
-	}
+// RegisterDynamicCommands scans loaded config for custom actions and registers
+// them as Cobra sub-commands. These appear in help output and execute the same
+// pipeline as built-in commands (config load → project detect → filter → execute
+// with hooks).
+func RegisterDynamicCommands() {
+	tasks := loadConfigForDiscovery()
 	if tasks == nil {
 		return
 	}
 
-	// Collect all unique custom action names across all project types
-	customActions := make(map[string]bool)
+	// Collect all custom action names across all tasks
+	customActions := make(map[string]string) // action name -> description
 	for _, task := range tasks {
-		for _, action := range task.CustomActions() {
-			customActions[action] = true
+		for name, cmd := range task.Custom {
+			if _, exists := customActions[name]; !exists {
+				customActions[name] = cmd
+			}
 		}
 	}
 
@@ -139,44 +130,52 @@ func registerDynamicCommands(workDir string) {
 	}
 
 	// Sort for deterministic ordering
-	sortedActions := make([]string, 0, len(customActions))
-	for a := range customActions {
-		sortedActions = append(sortedActions, a)
+	names := make([]string, 0, len(customActions))
+	for name := range customActions {
+		names = append(names, name)
 	}
-	sort.Strings(sortedActions)
+	sort.Strings(names)
 
-	for _, action := range sortedActions {
-		action := action // capture for closure
-		dynamicCommands[action] = true
-		cmd := &cobra.Command{
-			Use:   action,
-			Short: fmt.Sprintf("Custom command: %s", action),
+	for _, name := range names {
+		actionName := name
+		cmdStr := customActions[name]
+		dynamicCmd := &cobra.Command{
+			Use:   actionName,
+			Short: fmt.Sprintf("Custom command: %s", cmdStr),
+			Long:  fmt.Sprintf("Runs the custom action '%s' defined in .sdlc.json.\nCommand: %s", actionName, cmdStr),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return executeTask(cmd, action)
+				return executeTask(cmd, actionName)
 			},
+			GroupID: "custom",
 		}
-		RootCmd.AddCommand(cmd)
+		RootCmd.AddCommand(dynamicCmd)
 	}
+
+	// Add a custom commands group to the help output
+	RootCmd.AddGroup(&cobra.Group{
+		ID:    "custom",
+		Title: "Custom Commands:",
+	})
 }
 
-// loadTasks is a helper to load tasks from config (used for dynamic command discovery).
-func loadTasks(workDir string) (map[string]lib.Task, error) {
-	var tasks map[string]lib.Task
-	var err error
-
-	if cfgFile != "" {
-		tasks, err = config.Load(cfgFile)
-	} else {
-		tasks, err = config.LoadLocal(workDir)
-		if err != nil {
-			return nil, err
-		}
-		if tasks == nil {
-			tasks, err = config.Load("")
-		}
+// loadConfigForDiscovery loads config to discover custom actions for dynamic
+// sub-command registration. It tries local config first, then global.
+func loadConfigForDiscovery() map[string]lib.Task {
+	wd, err := resolveWorkDir(workDir)
+	if err != nil {
+		return nil
 	}
 
-	return tasks, err
+	var tasks map[string]lib.Task
+	if cfgFile != "" {
+		tasks, _ = config.Load(cfgFile)
+	} else {
+		tasks, _ = config.LoadLocal(wd)
+		if tasks == nil {
+			tasks, _ = config.Load("")
+		}
+	}
+	return tasks
 }
 
 func executeTask(cmd *cobra.Command, action string) error {
@@ -309,6 +308,14 @@ func runTask(ctx context.Context, wd, action string) error {
 			color := getModuleColor(i)
 			prefix := fmt.Sprintf("[%s%s%s] ", color, p.Path, colorReset)
 			fmt.Printf(" - %s%s\n", prefix, cmdStr)
+
+			// Show hooks in dry-run
+			if preHook := p.Task.PreHook(action); preHook != "" {
+				fmt.Printf(" - %s[pre-hook] %s\n", prefix, preHook)
+			}
+			if postHook := p.Task.PostHook(action); postHook != "" {
+				fmt.Printf(" - %s[post-hook] %s\n", prefix, postHook)
+			}
 		}
 		// Do not perform any actions in dry-run mode
 		return nil
@@ -335,6 +342,7 @@ func runTask(ctx context.Context, wd, action string) error {
 
 		go func(p engine.Project, index int) {
 			defer wg.Done()
+
 			env, args := prepareProjectEnv(p, rootEnvConfig)
 			runProject(ctx, p, index, action, env, args, len(selectedProjects) > 1)
 		}(project, originalIdx)
@@ -817,7 +825,21 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 	}
 
 	// Substitute environment variables in the command string
-	cmdStr = substituteEnv(cmdStr, env)
+	substituteEnvVars(&cmdStr, env)
+
+	// AC2: Run pre-hook if defined
+	if preHookCmd := p.Task.PreHook(action); preHookCmd != "" {
+		substituteEnvVars(&preHookCmd, env)
+		if !multi {
+			fmt.Printf("[SDLC] Running pre-hook for %s: %s\n", action, preHookCmd)
+		}
+		if err := runCommand(ctx, preHookCmd, p.AbsPath, out, errOut, env); err != nil {
+			fmt.Fprintf(errOut, "Pre-hook failed (skipping main command): %v\n", err)
+			// Run post-hook even on pre-hook failure
+			runPostHookIfNeeded(ctx, p, action, env, out, errOut, multi)
+			return fmt.Errorf("pre-hook for action %s failed: %w", action, err)
+		}
+	}
 
 	// Run the main command
 	mainErr := runCommand(ctx, cmdStr, p.AbsPath, out, errOut, env)
@@ -825,28 +847,43 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 		fmt.Fprintf(errOut, "Command failed: %v\n", mainErr)
 	}
 
-	// Run the command
-	if err := runCommand(ctx, cmdStr, p.AbsPath, out, errOut, env); err != nil {
-		fmt.Fprintf(errOut, "Command failed: %v\n", err)
-		// Flush any buffered output before returning the error
-		if f, ok := out.(flusher); ok {
-			f.Flush()
-		}
-		if f, ok := errOut.(flusher); ok {
-			f.Flush()
-		}
-		return err
-	}
+	// AC2: Run post-hook if defined (runs regardless of main command success/failure)
+	runPostHookIfNeeded(ctx, p, action, env, out, errOut, multi)
 
-	// Flush any remaining partial lines after the command completes
-	if f, ok := out.(flusher); ok {
-		f.Flush()
-	}
-	if f, ok := errOut.(flusher); ok {
-		f.Flush()
-	}
+	return mainErr
+}
 
-	return nil
+// runPostHookIfNeeded executes the post-hook for the given action if one is defined.
+func runPostHookIfNeeded(ctx context.Context, p engine.Project, action string, env map[string]string, out, errOut io.Writer, multi bool) {
+	postHookCmd := p.Task.PostHook(action)
+	if postHookCmd == "" {
+		return
+	}
+	substituteEnvVars(&postHookCmd, env)
+	if !multi {
+		fmt.Printf("[SDLC] Running post-hook for %s: %s\n", action, postHookCmd)
+	}
+	if err := runCommand(ctx, postHookCmd, p.AbsPath, out, errOut, env); err != nil {
+		fmt.Fprintf(errOut, "Post-hook failed: %v\n", err)
+	}
+}
+
+// substituteEnvVars replaces $KEY and ${KEY} patterns in cmdStr with values from env.
+// Longer keys are replaced first to avoid partial matches.
+func substituteEnvVars(cmdStr *string, env map[string]string) {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return len(keys[i]) > len(keys[j])
+	})
+
+	for _, k := range keys {
+		v := env[k]
+		*cmdStr = strings.ReplaceAll(*cmdStr, fmt.Sprintf("${%s}", k), v)
+		*cmdStr = strings.ReplaceAll(*cmdStr, fmt.Sprintf("$%s", k), v)
+	}
 }
 
 // hasChanges checks if any file in root has been modified since sinceTime
@@ -957,9 +994,9 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 		}
 
 		prompt := promptui.Select{
-			Label:        "Select modules to run (Select to toggle)",
-			Items:        items,
-			Size:         len(items) + 1,
+			Label:       "Select modules to run (Select to toggle)",
+			Items:       items,
+			Size:        len(items) + 1,
 			HideSelected: true,
 		}
 
@@ -996,10 +1033,10 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 func printBanner() {
 	banner := `
    _____ ____  __    ______
-  / ___// __ \/ /   / ____/
-  \__ \/ / / / /   / /     
+  / ___// __ \\/ /   / ____/
+  \\__ \\/ / / / /   / /     
  ___/ / /_/ / /___/ /___   
-/____/_____/_____/\____/   
+/____/_____/_____/\\____/   
 `
 	fmt.Println(colorCyan + banner + colorReset)
 }

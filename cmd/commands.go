@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -17,19 +18,20 @@ import (
 	"sdlc/engine"
 	"sdlc/lib"
 
+	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 )
 
 const (
-	colorReset    = "\033[0m"
-	colorRed      = "\033[31m"
-	colorGreen    = "\033[32m"
-	colorYellow   = "\033[33m"
-	colorBlue     = "\033[34m"
-	colorMagenta  = "\033[35m"
-	colorCyan     = "\033[36m"
-	colorWhite    = "\033[37m"
-	colorDarkGrey = "\033[90m"
+	colorReset    = "\\033[0m"
+	colorRed      = "\\033[31m"
+	colorGreen    = "\\033[32m"
+	colorYellow   = "\\033[33m"
+	colorBlue     = "\\033[34m"
+	colorMagenta  = "\\033[35m"
+	colorCyan     = "\\033[36m"
+	colorWhite    = "\\033[37m"
+	colorDarkGrey = "\\033[90m"
 )
 
 var moduleColors = []string{
@@ -227,22 +229,21 @@ func runTask(ctx context.Context, wd, action string) error {
 		return nil
 	}
 
+	// Create a shared thread-safe writer for concurrent output when running multiple modules
+	isMulti := len(selectedProjects) > 1
+	var sharedOut, sharedErr *SharedPrefixWriter
+	if isMulti {
+		sharedOut = NewSharedPrefixWriter(os.Stdout)
+		sharedErr = NewSharedPrefixWriter(os.Stderr)
+	}
+
 	if watchMode {
 		fmt.Printf("[SDLC] Watch mode enabled. Watching for changes in detected projects...\n")
-		return watchAndRunLoop(ctx, selectedProjects, projects, action, rootEnvConfig)
+		return watchAndRunLoop(ctx, selectedProjects, projects, action, rootEnvConfig, sharedOut, sharedErr)
 	}
 
 	// Execute for each selected project once
 	var wg sync.WaitGroup
-
-	// Create shared SyncWriters for stdout and stderr so that concurrent
-	// goroutines produce atomic, non-interleaved output lines.
-	var sharedStdout, sharedStderr io.Writer
-	if len(selectedProjects) > 1 {
-		sharedStdout = lib.NewSyncWriter(os.Stdout, "")
-		sharedStderr = lib.NewSyncWriter(os.Stderr, "")
-	}
-
 	for i, project := range selectedProjects {
 		wg.Add(1)
 
@@ -258,24 +259,15 @@ func runTask(ctx context.Context, wd, action string) error {
 		go func(p engine.Project, index int) {
 			defer wg.Done()
 			env, args := prepareProjectEnv(p, rootEnvConfig)
-			runProject(ctx, p, index, action, env, args, len(selectedProjects) > 1, sharedStdout, sharedStderr)
+			runProject(ctx, p, index, action, env, args, isMulti, sharedOut, sharedErr)
 		}(project, originalIdx)
 	}
 
 	wg.Wait()
-
-	// Flush any remaining buffered partial lines after all goroutines finish.
-	if sw, ok := sharedStdout.(*lib.SyncWriter); ok {
-		sw.Flush()
-	}
-	if sw, ok := sharedStderr.(*lib.SyncWriter); ok {
-		sw.Flush()
-	}
-
 	return nil
 }
 
-func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects []engine.Project, action string, rootEnvConfig *config.EnvSettings) error {
+func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects []engine.Project, action string, rootEnvConfig *config.EnvSettings, sharedOut, sharedErr *SharedPrefixWriter) error {
 	fmt.Println("[SDLC] Starting smart watchAndRunLoop")
 	defer fmt.Println("[SDLC] Exiting watchAndRunLoop")
 
@@ -287,10 +279,6 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 
 	states := make(map[string]*projectState)
 	var mu sync.Mutex
-
-	// Shared SyncWriters for concurrent output safety in watch mode
-	sharedStdout := lib.NewSyncWriter(os.Stdout, "")
-	sharedStderr := lib.NewSyncWriter(os.Stderr, "")
 
 	// Helper to start (or restart) a project
 	startProject := func(p engine.Project) {
@@ -331,10 +319,8 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 			defer wg.Done()
 			env, args := prepareProjectEnv(p, rootEnvConfig)
 			// Pass a derived context that handles cancellation properly
-			err := runProject(runCtx, p, idx, action, env, args, len(projects) > 1, sharedStdout, sharedStderr)
-			if err != nil && err != context.Canceled {
-				fmt.Printf("[SDLC] Module %s exited with error: %v\n", p.Name, err)
-			}
+			isMulti := len(projects) > 1
+			runProject(runCtx, p, idx, action, env, args, isMulti, sharedOut, sharedErr)
 		}()
 	}
 
@@ -373,11 +359,6 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 			case <-time.After(5 * time.Second):
 				fmt.Println("[SDLC] Timeout waiting for modules to stop")
 			}
-
-			// Flush remaining buffered output
-			sharedStdout.(*lib.SyncWriter).Flush()
-			sharedStderr.(*lib.SyncWriter).Flush()
-
 			return nil
 
 		case <-ticker.C:
@@ -398,10 +379,6 @@ func watchAndRunLoop(ctx context.Context, projects []engine.Project, allProjects
 				}
 
 				if changed {
-					// Flush before restart to preserve any partial output
-					sharedStdout.(*lib.SyncWriter).Flush()
-					sharedStderr.(*lib.SyncWriter).Flush()
-
 					fmt.Printf("\n[SDLC] File change detected: %s in %s. Restarting module...\n", filepath.Base(changedFile), p.Path)
 					startProject(p)
 				}
@@ -438,7 +415,17 @@ func prepareProjectEnv(p engine.Project, rootEnvConfig *config.EnvSettings) (map
 	return finalEnv, finalArgs
 }
 
-func runProject(ctx context.Context, p engine.Project, index int, action string, env map[string]string, args []string, multi bool, sharedStdout, sharedStderr io.Writer) error {
+// sourceWriterAdapter wraps a *SourceWriter to implement io.Writer so it can be
+// passed to Executor.SetOutput.
+type sourceWriterAdapter struct {
+	sw *SourceWriter
+}
+
+func (a *sourceWriterAdapter) Write(p []byte) (n int, err error) {
+	return a.sw.Write(p)
+}
+
+func runProject(ctx context.Context, p engine.Project, index int, action string, env map[string]string, args []string, multi bool, sharedOut, sharedErr *SharedPrefixWriter) error {
 	// Clean up .vite-temp if it exists, to prevent EPERM errors on restart
 	viteTemp := filepath.Join(p.AbsPath, "node_modules", ".vite-temp")
 	if _, err := os.Stat(viteTemp); err == nil {
@@ -453,20 +440,14 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 	prefix := fmt.Sprintf("[%s%s%s] ", color, p.Path, colorReset)
 	var out, errOut io.Writer
 
-	if multi {
-		// Use per-module SyncWriters that feed into the shared SyncWriter.
-		// Each module's output gets its own colorized prefix, while the shared
-		// writer ensures no two modules interleave at the byte level.
-		if sharedStdout != nil {
-			out = lib.NewSyncWriter(sharedStdout, prefix)
-		} else {
-			out = lib.NewSyncWriter(os.Stdout, prefix)
-		}
-		if sharedStderr != nil {
-			errOut = lib.NewSyncWriter(sharedStderr, prefix)
-		} else {
-			errOut = lib.NewSyncWriter(os.Stderr, prefix)
-		}
+	if multi && sharedOut != nil && sharedErr != nil {
+		outWriter := sharedOut.SourceWriter(prefix)
+		errWriter := sharedErr.SourceWriter(prefix)
+		out = &sourceWriterAdapter{sw: outWriter}
+		errOut = &sourceWriterAdapter{sw: errWriter}
+		// Defer flush to ensure partial lines are output when the subprocess finishes
+		defer outWriter.Flush()
+		defer errWriter.Flush()
 	} else {
 		out = os.Stdout
 		errOut = os.Stderr
@@ -507,15 +488,6 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 		fmt.Fprintf(errOut, "Command failed: %v\n", err)
 		return err
 	}
-
-	// Flush any remaining partial output for this module's writer
-	if sw, ok := out.(*lib.SyncWriter); ok {
-		sw.Flush()
-	}
-	if sw, ok := errOut.(*lib.SyncWriter); ok {
-		sw.Flush()
-	}
-
 	return nil
 }
 
@@ -523,7 +495,6 @@ func runProject(ctx context.Context, p engine.Project, index int, action string,
 func hasChanges(root string, sinceTime time.Time) (bool, string, error) {
 	var changed bool
 	var changedFile string
-
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -644,16 +615,16 @@ func promptModuleSelection(projects []engine.Project) ([]engine.Project, error) 
 		// Use a custom templates to avoid excessive newlines if needed,
 		// but primarily we want to clear the screen or just rely on promptui's behavior.
 		// However, promptui by default redraws in place if stdout is terminal.
-		// The issue "log every click" might refer to the fact that promptui prints the final selection 
+		// The issue "log every click" might refer to the fact that promptui prints the final selection
 		// to stdout when you press enter.
 		// To suppress that, we can set HideSelected: true in templates?
 		// But Select struct doesn't have HideSelected. It has HideSelected bool.
 		// Let's try HideSelected: true.
 
 		prompt := promptui.Select{
-			Label: "Select modules to run (Select to toggle)",
-			Items: items,
-			Size:  len(items) + 1,
+			Label:       "Select modules to run (Select to toggle)",
+			Items:       items,
+			Size:        len(items) + 1,
 			HideSelected: true,
 		}
 

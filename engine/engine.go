@@ -7,8 +7,27 @@ import (
 	"path/filepath"
 	"sdlc/config"
 	"sdlc/lib"
+	"sort"
 	"strings"
 )
+
+// defaultExcludedDirs contains directory names that should never be scanned for build files.
+var defaultExcludedDirs = map[string]bool{
+	"node_modules": true,
+	"vendor":       true,
+	".git":         true,
+	"dist":         true,
+	"build":        true,
+	"out":          true,
+	"target":       true,
+	"bin":          true,
+	"pkg":          true,
+	".idea":        true,
+	".vscode":      true,
+	".zed":         true,
+	".kael_index":  true,
+	".planner":     true,
+}
 
 // Project represents a detected project with its location and task definition
 type Project struct {
@@ -18,35 +37,37 @@ type Project struct {
 	Task    lib.Task // The task definition
 }
 
-// maxDetectionDepth is the upper bound for depth to prevent runaway recursion
-// when the user passes -1 (unlimited).
-const maxDetectionDepth = 50
-
-// DetectProjects scans the working directory for known build files defined
-// in the config. It recurses up to maxDepth levels deep (0 = root only,
-// 1 = root + immediate children, which is the previous default behaviour).
-// A negative maxDepth means unlimited recursion up to maxDetectionDepth.
-func DetectProjects(workDir string, tasks map[string]lib.Task, maxDepth int) ([]Project, error) {
+// DetectProjects recursively walks the working directory tree
+// for known build files defined in the config.
+// It returns a list of detected projects sorted by path.
+func DetectProjects(workDir string, tasks map[string]lib.Task) ([]Project, error) {
 	var projects []Project
 	seenDirs := make(map[string]bool)
 
-	absWorkDir, err := filepath.Abs(workDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve absolute path for %q: %w", workDir, err)
-	}
-
-	// Clamp negative depth to the safety limit
-	if maxDepth < 0 {
-		maxDepth = maxDetectionDepth
-	}
-
-	skipDirs := defaultSkipDirs()
-
-	// Helper to check a directory for build files
-	checkDir := func(dir string) error {
-		absDir, err := filepath.Abs(dir)
+	err := filepath.WalkDir(workDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return err
+			return nil
+		}
+
+		// Skip non-directory entries
+		if !d.IsDir() {
+			return nil
+		}
+
+		// Skip directories in the defaultExcludedDirs list
+		if defaultExcludedDirs[d.Name()] {
+			return filepath.SkipDir
+		}
+
+		// Skip dot-directories (except the root workDir itself)
+		if strings.HasPrefix(d.Name(), ".") && path != workDir {
+			return filepath.SkipDir
+		}
+
+		// Resolve symlinks and track seen directories
+		absDir, err := filepath.Abs(path)
+		if err != nil {
+			return nil
 		}
 		realDir, err := filepath.EvalSymlinks(absDir)
 		if err != nil {
@@ -59,9 +80,9 @@ func DetectProjects(workDir string, tasks map[string]lib.Task, maxDepth int) ([]
 		seenDirs[realDir] = true
 
 		// Try to load local configuration
-		localTasks, err := config.LoadLocal(dir)
+		localTasks, err := config.LoadLocal(path)
 		if err != nil {
-			fmt.Printf("Warning: failed to read local config in %s: %v\n", dir, err)
+			fmt.Printf("Warning: failed to read local config in %s: %v\n", path, err)
 		}
 
 		// Merge with global tasks — local overrides global
@@ -81,9 +102,10 @@ func DetectProjects(workDir string, tasks map[string]lib.Task, maxDepth int) ([]
 			}
 		}
 
-		entries, err := os.ReadDir(dir)
+		// Read directory entries and match build files
+		entries, err := os.ReadDir(path)
 		if err != nil {
-			return err
+			return nil
 		}
 
 		for _, entry := range entries {
@@ -91,11 +113,10 @@ func DetectProjects(workDir string, tasks map[string]lib.Task, maxDepth int) ([]
 				continue
 			}
 			if task, ok := effectiveTasks[entry.Name()]; ok {
-				// Check if project already exists to prevent duplicates
-				// We enforce one project per directory to avoid running multiple tasks for the same project
+				// Enforce one project per directory to avoid duplicates
 				exists := false
 				for _, p := range projects {
-					if p.AbsPath == dir {
+					if p.AbsPath == path {
 						exists = true
 						break
 					}
@@ -104,67 +125,30 @@ func DetectProjects(workDir string, tasks map[string]lib.Task, maxDepth int) ([]
 					continue
 				}
 
-				relPath, err := filepath.Rel(workDir, dir)
+				relPath, err := filepath.Rel(workDir, path)
 				if err != nil {
-					relPath = dir
+					relPath = path
 				}
 
 				projects = append(projects, Project{
 					Name:    entry.Name(),
 					Path:    relPath,
-					AbsPath: dir,
+					AbsPath: path,
 					Task:    task,
 				})
 			}
 		}
 		return nil
-	}
-
-	// Walk the directory tree with depth limiting
-	err = filepath.WalkDir(absWorkDir, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			// Skip directories we can't access but continue walking
-			return nil
-		}
-
-		if !d.IsDir() {
-			return nil
-		}
-
-		// Calculate depth relative to the working directory
-		rel, err := filepath.Rel(absWorkDir, path)
-		if err != nil {
-			return nil
-		}
-		if rel == "." {
-			// This is the root — always check it
-			if err := checkDir(path); err != nil {
-				fmt.Printf("Warning: failed to check directory %s: %v\n", path, err)
-			}
-			return nil
-		}
-
-		// Check depth constraint
-		depth := strings.Count(rel, string(filepath.Separator))
-		if depth > maxDepth {
-			return fs.SkipDir
-		}
-
-		// Skip well-known non-project directories
-		if skipDirs[d.Name()] {
-			return fs.SkipDir
-		}
-
-		// Check this directory for build files
-		if err := checkDir(path); err != nil {
-			fmt.Printf("Warning: failed to check directory %s: %v\n", path, err)
-		}
-
-		return nil
 	})
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to walk directory %s: %w", workDir, err)
 	}
+
+	// Sort projects by Path for deterministic ordering
+	sort.Slice(projects, func(i, j int) bool {
+		return projects[i].Path < projects[j].Path
+	})
 
 	return projects, nil
 }

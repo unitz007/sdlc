@@ -2,6 +2,9 @@ package lib
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -57,4 +60,65 @@ func TestExecute_InvalidProgram(t *testing.T) {
 	if err == nil {
 		t.Fatal("Execute() with invalid program expected error, got nil")
 	}
+}
+
+func TestExecute_ExitCode_Success(t *testing.T) {
+	executor := NewExecutor(context.Background(), "echo hello")
+	err := executor.Execute()
+	if err != nil {
+		t.Fatalf("Execute() returned unexpected error: %v", err)
+	}
+	if code := executor.ExitCode(); code != 0 {
+		t.Errorf("ExitCode() = %d, want 0", code)
+	}
+}
+
+func TestExecute_ExitCode_Failure(t *testing.T) {
+	// Create a temp script that exits with code 42 (avoids space-splitting issues)
+	script := filepath.Join(t.TempDir(), "exit42.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 42\n"), 0755); err != nil {
+		t.Fatalf("failed to create test script: %v", err)
+	}
+	executor := NewExecutor(context.Background(), script)
+	err := executor.Execute()
+	if err == nil {
+		t.Fatal("Execute() expected error for exit 42, got nil")
+	}
+	if code := executor.ExitCode(); code != 42 {
+		t.Errorf("ExitCode() = %d, want 42", code)
+	}
+}
+
+func TestExecute_ExitCode_DefaultOnStartError(t *testing.T) {
+	executor := NewExecutor(context.Background(), "nonexistent_binary_xyz")
+	err := executor.Execute()
+	if err == nil {
+		t.Fatal("Execute() expected error for nonexistent binary, got nil")
+	}
+	if code := executor.ExitCode(); code != 1 {
+		t.Errorf("ExitCode() = %d, want 1 (default for start errors)", code)
+	}
+}
+
+func TestExecute_ExitCode_SignalDeath(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skipf("skipping signal death test on %s", runtime.GOOS)
+	}
+	// Create a temp script that kills itself with SIGKILL
+	script := filepath.Join(t.TempDir(), "killself.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nkill -9 $$\n"), 0755); err != nil {
+		t.Fatalf("failed to create test script: %v", err)
+	}
+	executor := NewExecutor(context.Background(), script)
+	err := executor.Execute()
+	if err == nil {
+		t.Fatal("Execute() expected error for signal-killed process, got nil")
+	}
+	code := executor.ExitCode()
+	// On Unix, a process killed by signal 9 (SIGKILL) is conventionally
+	// mapped to exit code 128 + 9 = 137.
+	if code != 137 {
+		t.Errorf("ExitCode() = %d, want 137 (128 + SIGKILL) for signal-killed process", code)
+	}
+	t.Logf("Signal death exit code: %d", code)
 }

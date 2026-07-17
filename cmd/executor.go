@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"os"
 	"sdlc/lib"
@@ -20,7 +19,8 @@ func runCommand(ctx context.Context, commandStr, dir string, stdout, stderr io.W
 		executor.SetEnv(env)
 	}
 	if err := executor.Execute(); err != nil {
-		return fmt.Errorf("command execution failed: %w", err)
+		code := executor.ExitCode()
+		return &ExitCodeError{Code: code, Err: err}
 	}
 	return nil
 }

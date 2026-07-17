@@ -25,7 +25,24 @@ Whether you're working on a Go backend, a Node.js frontend, or a multi-module mo
 
 ## Installation
 
-You can build and install `sdlc` from source using Go (1.20+):
+### Homebrew
+
+Once a tagged release has been published, you can install `sdlc` with Homebrew:
+
+```bash
+brew tap unitz007/tap
+brew install sdlc
+```
+
+If you prefer the fully-qualified formula name:
+
+```bash
+brew install unitz007/tap/sdlc
+```
+
+### From source
+
+You can also build and install `sdlc` from source using Go (1.20+):
 
 ```bash
 git clone https://github.com/unitz007/sdlc.git
@@ -34,6 +51,29 @@ go install .
 ```
 
 Ensure your `$(go env GOPATH)/bin` is in your system `PATH`.
+
+## Releases
+
+This repository is configured to publish tagged releases with `GoReleaser`.
+
+- Push a semantic version tag such as `v1.2.3`.
+- The GitHub Actions workflow in `/.github/workflows/release.yml` runs `go test ./...`, publishes the GitHub release with `GoReleaser`, then runs `scripts/publish-homebrew-formula.sh` to update the Homebrew formula in `unitz007/homebrew-tap`.
+- To allow formula updates in the tap repository, add a `HOMEBREW_TAP_GITHUB_TOKEN` repository secret with permission to push to `unitz007/homebrew-tap`.
+
+For local release validation, run:
+
+```bash
+goreleaser check
+goreleaser release --snapshot --clean
+```
+
+If you want to preview the formula publishing step locally after generating `dist/`, run:
+
+```bash
+export GITHUB_REF_NAME=v0.0.0
+export HOMEBREW_TAP_GITHUB_TOKEN=your_token_here
+bash ./scripts/publish-homebrew-formula.sh
+```
 
 ## Usage
 

@@ -18,6 +18,7 @@ var (
 	extraArgs  []string
 	targetMod  string
 	ignoreMods []string
+
 	runAllMods bool
 	watchMode        bool
 	debounceDuration string

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sdlc/config"
@@ -84,7 +85,7 @@ func DetectProjects(workDir string, tasks map[string]lib.Task) ([]Project, error
 			fmt.Printf("Warning: failed to read local config in %s: %v\n", path, err)
 		}
 
-		// Merge with global tasks
+		// Merge with global tasks — local overrides global
 		effectiveTasks := tasks
 		if len(localTasks) > 0 {
 			effectiveTasks = make(map[string]lib.Task)
@@ -92,7 +93,12 @@ func DetectProjects(workDir string, tasks map[string]lib.Task) ([]Project, error
 				effectiveTasks[k] = v
 			}
 			for k, v := range localTasks {
-				effectiveTasks[k] = v
+				if existing, ok := effectiveTasks[k]; ok {
+					// Merge: local overrides built-in fields, but custom and hooks are merged
+					effectiveTasks[k] = mergeTasks(existing, v)
+				} else {
+					effectiveTasks[k] = v
+				}
 			}
 		}
 
@@ -145,4 +151,55 @@ func DetectProjects(workDir string, tasks map[string]lib.Task) ([]Project, error
 	})
 
 	return projects, nil
+}
+
+// mergeTasks merges two Task structs where local (b) overrides global (a)
+// for built-in fields, but custom actions and hooks are combined (local wins
+// on conflicts).
+func mergeTasks(a, b lib.Task) lib.Task {
+	merged := lib.Task{
+		// Built-in fields: local overrides global
+		Run:     b.Run,
+		Test:    b.Test,
+		Build:   b.Build,
+		Install: b.Install,
+		Clean:   b.Clean,
+	}
+
+	// Merge custom actions: start with global, override with local
+	merged.Custom = make(map[string]string)
+	for k, v := range a.Custom {
+		merged.Custom[k] = v
+	}
+	for k, v := range b.Custom {
+		merged.Custom[k] = v
+	}
+	if len(merged.Custom) == 0 {
+		merged.Custom = nil
+	}
+
+	// Merge hooks: start with global, override with local
+	merged.Hooks.Pre = make(map[string]string)
+	for k, v := range a.Hooks.Pre {
+		merged.Hooks.Pre[k] = v
+	}
+	for k, v := range b.Hooks.Pre {
+		merged.Hooks.Pre[k] = v
+	}
+	if len(merged.Hooks.Pre) == 0 {
+		merged.Hooks.Pre = nil
+	}
+
+	merged.Hooks.Post = make(map[string]string)
+	for k, v := range a.Hooks.Post {
+		merged.Hooks.Post[k] = v
+	}
+	for k, v := range b.Hooks.Post {
+		merged.Hooks.Post[k] = v
+	}
+	if len(merged.Hooks.Post) == 0 {
+		merged.Hooks.Post = nil
+	}
+
+	return merged
 }
